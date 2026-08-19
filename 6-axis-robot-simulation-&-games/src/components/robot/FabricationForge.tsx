@@ -1251,23 +1251,42 @@ function WeldBeadsInstanced({
       let sz = bead.scale.z * sm * wm;
 
       // ------------------------------------------------------------------------------------
-      // 2. TOO COLD / STUBBING: Worm Capsule with Lateral Wobble & Matte Slag
+      // 2. TOO COLD / STUBBING: Narrow ropey worm bead — poor fusion, piled on top of the plate.
+      //    Realism: cold weld metal doesn't wet the base metal, so it beads up into a thin,
+      //    stringy rope with periodic nodules ("knots") rather than a smooth flat bead.
       // ------------------------------------------------------------------------------------
       if (beadArc === 'too_cold_stubbing') {
+        // Rope cross-section radius (world-x width and world-y height). Cross-section stays
+        // small so the bead reads as a thin worm rather than a tall spike.
+        const ropeRadius = Math.max(sx, sz) * 0.42;
+
+        // Per-bead nodule pulse — deterministic on the bead index so the knots don't jitter.
+        // Alternates ~narrow / ~fat sections along the path to sell the "stringy worm" look.
+        const nodulePulse = 1.0 + 0.35 * Math.sin(i * 2.1) + 0.12 * Math.sin(i * 0.73);
+
+        // Length along the travel direction — a bit longer than one drop so adjacent worms
+        // overlap into a continuous rope instead of a chain of separated blobs.
+        const ropeLength = Math.max(sz, sx) * 1.35;
+
         dummy.position.copy(bead.pos);
 
-        // Apply lateral wobble (Math.sin)
+        // Gentle side-to-side wobble (rope wanders across the joint because the arc is stubbing).
         const rightVec = new THREE.Vector3(0, 0, 1).applyQuaternion(bead.quaternion);
-        dummy.position.addScaledVector(rightVec, Math.sin(i * 1.6) * (sz * 0.8));
+        dummy.position.addScaledVector(rightVec, Math.sin(i * 1.6) * ropeRadius * 0.9);
 
-        // Slightly elevated Y position
-        dummy.position.y = WORKPIECE_TOP_Y + (sy * 0.6) + (Math.sin(i * 33) * 0.002);
+        // Rope sits ON the plate (poor penetration) — center at surface + one radius up.
+        dummy.position.y = WORKPIECE_TOP_Y + ropeRadius * nodulePulse * 0.9;
 
-        // Rotate capsule to lay flat along Z-axis
+        // Lay the capsule flat along the travel Z axis.
         dummy.quaternion.copy(bead.quaternion).multiply(capsuleAlignZQuat);
 
-        // Scale capsule into a chunky stringy tube
-        dummy.scale.set(sx * 0.8, sz * 0.6, sy * 1.2);
+        // Scale: capsule length is on local-Y (which after the align-quat maps to travel Z).
+        // Cross-section is local-X (world-X width) and local-Z (world-Y height).
+        dummy.scale.set(
+          ropeRadius * nodulePulse,        // width across the joint
+          ropeLength,                       // length along travel
+          ropeRadius * nodulePulse * 1.05,  // vertical rope height, ~matches width => round rope
+        );
         dummy.updateMatrix();
 
         wormMeshRef.current.setMatrixAt(wormCount, dummy.matrix);
@@ -1276,15 +1295,28 @@ function WeldBeadsInstanced({
         wormCount++;
 
       // ------------------------------------------------------------------------------------
-      // 3. TOO HOT / GLOBULAR: Overheated Red Tubes & Charcoal Spatter
+      // 3. TOO HOT / GLOBULAR: Flat inconsistent crater bead with a spray of splatter droplets.
+      //    Realism: overheated GMAW blows the puddle out — the bead flattens and undercuts,
+      //    width varies from drop to drop, and molten spatter is thrown around the joint.
       // ------------------------------------------------------------------------------------
       } else if (beadArc === 'too_hot_globular') {
-        // Main Red Tube: Scale capsule chaotically (sx * 1.5, sy * 0.8, sz * 1.8), rotate to lay flat, glowing dull cherry red (#dc2626)
+        // Deterministic per-bead width/length variation so the bead reads as INCONSISTENT
+        // rather than a uniform giant disc. Ranges roughly 0.65x .. 1.35x of nominal.
+        const widthJitter = 1.0 + 0.35 * Math.sin(i * 1.3) + 0.10 * Math.sin(i * 0.41);
+        const lengthJitter = 1.0 + 0.25 * Math.sin(i * 0.9 + 1.2);
+
+        // Flatter puddle profile — height is minimal, width/length dominate.
+        const poolWidth = sx * 0.95 * widthJitter;
+        const poolLength = sz * 1.15 * lengthJitter;
+        const poolHeight = sy * 0.35;
+
+        // Sit slightly recessed into the plate to sell the "crater" — the puddle has burned
+        // down into the base metal instead of sitting proud like a healthy bead.
         dummy.position.copy(bead.pos);
-        dummy.position.y = WORKPIECE_TOP_Y + (sy * 0.3);
+        dummy.position.y = WORKPIECE_TOP_Y - poolHeight * 0.20 + Math.sin(i * 4.7) * 0.0015;
 
         dummy.quaternion.copy(bead.quaternion).multiply(capsuleAlignZQuat);
-        dummy.scale.set(sx * 1.5, sz * 1.8, sy * 0.8);
+        dummy.scale.set(poolWidth, poolLength, poolHeight);
         dummy.updateMatrix();
 
         craterMeshRef.current.setMatrixAt(craterCount, dummy.matrix);
@@ -1292,14 +1324,30 @@ function WeldBeadsInstanced({
         craterMeshRef.current.setColorAt(craterCount, tempColor);
         craterCount++;
 
-        // Charcoal Spatter (New): 2 times per main drop, push tiny squished capsule into wormMeshRef
-        for (let sp = 0; sp < 2; sp++) {
+        // Splatter droplets: several small charcoal beads scattered around the puddle.
+        // Deterministic offsets keyed off the bead index so droplets don't jitter each frame,
+        // and we cap wormCount to stay inside the reserved instance buffer.
+        const spatterCount = 7;
+        const spatterCap = 10000;
+        for (let sp = 0; sp < spatterCount && wormCount < spatterCap; sp++) {
+          // Deterministic pseudo-random offset in the plate plane.
+          const seed = i * 7.13 + sp * 2.917;
+          const angle = seed * 1.618;
+          const radius = 0.025 + (0.5 + 0.5 * Math.sin(seed * 3.1)) * 0.055;
+          const jitterX = Math.cos(angle) * radius;
+          const jitterZ = Math.sin(angle) * radius;
+
+          // Droplet size varies (some tiny, some chunky) — a few big blobs sell "splatter".
+          const dropletScale = 0.006 + (0.5 + 0.5 * Math.sin(seed * 5.7)) * 0.012;
+
           dummy.position.copy(bead.pos);
-          dummy.position.x += (Math.random() - 0.5) * 0.04;
-          dummy.position.z += (Math.random() - 0.5) * 0.04;
-          dummy.position.y = WORKPIECE_TOP_Y;
-          dummy.quaternion.copy(bead.quaternion);
-          dummy.scale.set(0.003, 0.001, 0.003);
+          dummy.position.x += jitterX;
+          dummy.position.z += jitterZ;
+          dummy.position.y = WORKPIECE_TOP_Y + dropletScale * 0.7;
+
+          // Neutralize orientation so droplets read as round blobs, not tiny tubes.
+          dummy.quaternion.identity();
+          dummy.scale.set(dropletScale, dropletScale * 0.6, dropletScale);
           dummy.updateMatrix();
 
           wormMeshRef.current.setMatrixAt(wormCount, dummy.matrix);
@@ -1388,7 +1436,7 @@ function WeldBeadsInstanced({
         castShadow
         receiveShadow
       />
-      {/* 2. Stringy Snake Capsule Worms & Charcoal Spatter Drops (Amperage Too Low / Too High Spatter) */}
+      {/* 2. Stringy ropey worm capsules (too-cold poor fusion) & charcoal splatter droplets (too-hot puddle blow-out) */}
       <instancedMesh
         ref={wormMeshRef}
         args={[wormGeo, wormMat, 10000]}
@@ -1396,7 +1444,7 @@ function WeldBeadsInstanced({
         castShadow
         receiveShadow
       />
-      {/* 3. Overheated Glowing Red Capsule Tubes (Amperage Too High / Globular Undercut) */}
+      {/* 3. Overheated flat crater puddles (too-hot inconsistent burn-through pool) */}
       <instancedMesh
         ref={craterMeshRef}
         args={[craterGeo, craterMat, 5000]}
@@ -1725,18 +1773,22 @@ function InteractiveFabricationScene({
       // 2. Live Defect Geometry & Gap Modifiers for Instanced Capsules:
       if (arcStatus === 'too_cold_stubbing') {
         const isSputtering = Math.random() > 0.85; // 15% chance to break the line
-        scaleX *= 0.50;
-        scaleZ *= 0.40;
-        scaleY *= 2.20;
+        // Narrow, ropey cross-section — the render pass turns this into a stringy worm.
+        // Height is only mildly boosted so the bead doesn't spike upward.
+        scaleX *= 0.55;
+        scaleZ *= 0.55;
+        scaleY *= 1.20;
         dropSpacing = Math.max(0.004, dropSpacing * 0.65);
         if (isSputtering) {
           lastBeadDropPosRef.current = currentTorchWorldPos.clone();
           return; // Skip pushing to beadsListRef to leave a gap
         }
       } else if (arcStatus === 'too_hot_globular') {
-        scaleX *= 1.3;
-        scaleZ *= 1.6;
-        scaleY *= 0.7;
+        // Flat, slightly wider puddle. Per-bead width/length jitter is applied at render
+        // time to make the crater read as inconsistent rather than as a uniform giant disc.
+        scaleX *= 1.10;
+        scaleZ *= 1.25;
+        scaleY *= 0.55;
       }
 
       if (travelStatus === 'too_fast_disconnected') {
