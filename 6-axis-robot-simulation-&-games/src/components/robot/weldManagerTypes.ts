@@ -51,6 +51,13 @@ export interface RoboDKWeldSettings {
   live_build: boolean;
   enable_jump_filter: boolean;
   max_segment_mm: number;
+
+  // Splatter Scatter Controls (charcoal droplets thrown around an over-heated puddle)
+  splatter_area_mm: number; // 5 - 200 mm scatter radius around each puddle drop
+  splatter_count: number; // 0 - 24 droplets dropped per emitting bead
+  splatter_density: number; // 0.0 - 1.0 fraction of beads that emit a splatter burst
+  splatter_size_mm: number; // 0.5 - 20 mm nominal droplet diameter
+  splatter_size_variance: number; // 0.0 - 1.0 random size spread around the nominal size
 }
 
 export const ROBODK_DEFAULT_SETTINGS: RoboDKWeldSettings = {
@@ -100,6 +107,13 @@ export const ROBODK_DEFAULT_SETTINGS: RoboDKWeldSettings = {
   live_build: true,
   enable_jump_filter: true,
   max_segment_mm: 8.0,
+
+  // Splatter scatter
+  splatter_area_mm: 60.0,
+  splatter_count: 7,
+  splatter_density: 0.85,
+  splatter_size_mm: 9.0,
+  splatter_size_variance: 0.6,
 };
 
 export interface WeldPreset {

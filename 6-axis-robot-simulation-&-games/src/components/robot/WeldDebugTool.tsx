@@ -73,7 +73,7 @@ export function WeldDebugTool({
   const { saveAllSettings, loadAllSettings, clearAllSettings } = useDebugSettings();
 
   const [isOpen, setIsOpen] = useState(true);
-  const [activeTab, setActiveTab] = useState<'scale' | 'color' | 'thermal' | 'calib' | 'style' | 'layout'>('thermal');
+  const [activeTab, setActiveTab] = useState<'scale' | 'color' | 'thermal' | 'calib' | 'style' | 'splat' | 'layout'>('thermal');
   const [windowWidth, setWindowWidth] = useState<number>(360); // 270 to 480 px
   const [windowOpacity, setWindowOpacity] = useState<number>(95);
   const [useDialMode, setUseDialMode] = useState<boolean>(true);
@@ -189,6 +189,11 @@ export function WeldDebugTool({
   const colorMode = settings.color_mode || 'THERMAL_COOLING';
   const coolingDuration = settings.cooling_duration_sec ?? 3.5;
   const coolingRate = settings.cooling_rate ?? 0.285;
+  const splatterArea = settings.splatter_area_mm ?? 60.0;
+  const splatterDropCount = settings.splatter_count ?? 7;
+  const splatterDensity = settings.splatter_density ?? 0.85;
+  const splatterSize = settings.splatter_size_mm ?? 9.0;
+  const splatterVariance = settings.splatter_size_variance ?? 0.6;
 
   if (!isOpen && !isEmbedded) {
     return (
@@ -376,6 +381,19 @@ export function WeldDebugTool({
           >
             <Layers size={11} />
             <span>Style</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('splat')}
+            className={`py-1 px-2 rounded-lg font-bold text-[10px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
+              activeTab === 'splat'
+                ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+            }`}
+            title="Splatter scatter area, count, density and droplet size"
+          >
+            <Zap size={11} />
+            <span>Splat</span>
           </button>
 
           {!isEmbedded && (
@@ -1124,6 +1142,141 @@ export function WeldDebugTool({
         )}
 
         {/* LAYOUT / SIZING TAB */}
+        {/* SPLATTER SCATTER TAB */}
+        {activeTab === 'splat' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-1.5 text-rose-300 font-bold">
+              <Zap size={13} className="text-rose-400" />
+              <span className="text-xs">Splatter Scatter (Too-Hot Puddle)</span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-snug">
+              Molten droplets thrown around an over-heated weld. Scatter is randomized per
+              droplet within the area below.
+            </p>
+
+            {/* Scatter Area */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Scatter Area (radius):</span>
+                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[11px] border border-rose-500/40">
+                  {splatterArea.toFixed(0)} mm
+                </span>
+              </div>
+              <input
+                type="range"
+                min={2}
+                max={200}
+                step={1}
+                value={splatterArea}
+                onChange={(e) => updateParam('splatter_area_mm', parseFloat(e.target.value))}
+                className="w-full accent-rose-500 cursor-pointer"
+              />
+            </div>
+
+            {/* Droplet Count */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Spheres Dropped (per bead):</span>
+                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[11px] border border-rose-500/40">
+                  {splatterDropCount}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={24}
+                step={1}
+                value={splatterDropCount}
+                onChange={(e) => updateParam('splatter_count', parseInt(e.target.value, 10))}
+                className="w-full accent-rose-500 cursor-pointer"
+              />
+            </div>
+
+            {/* Density */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Density (beads that splatter):</span>
+                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[11px] border border-rose-500/40">
+                  {(splatterDensity * 100).toFixed(0)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={splatterDensity}
+                onChange={(e) => updateParam('splatter_density', parseFloat(e.target.value))}
+                className="w-full accent-rose-500 cursor-pointer"
+              />
+            </div>
+
+            {/* Droplet Size */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Droplet Size:</span>
+                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[11px] border border-rose-500/40">
+                  {splatterSize.toFixed(1)} mm
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.5}
+                max={20}
+                step={0.5}
+                value={splatterSize}
+                onChange={(e) => updateParam('splatter_size_mm', parseFloat(e.target.value))}
+                className="w-full accent-rose-500 cursor-pointer"
+              />
+            </div>
+
+            {/* Size Randomness */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Size Randomness:</span>
+                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[11px] border border-rose-500/40">
+                  ±{(splatterVariance * 100).toFixed(0)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={splatterVariance}
+                onChange={(e) => updateParam('splatter_size_variance', parseFloat(e.target.value))}
+                className="w-full accent-rose-500 cursor-pointer"
+              />
+            </div>
+
+            {/* Quick Presets */}
+            <div className="grid grid-cols-3 gap-1 pt-0.5">
+              {[
+                { label: 'Light', area: 30, count: 3, density: 0.35, size: 6 },
+                { label: 'Default', area: 60, count: 7, density: 0.85, size: 9 },
+                { label: 'Heavy', area: 110, count: 16, density: 1.0, size: 13 },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() =>
+                    onUpdateSettings({
+                      ...settings,
+                      splatter_area_mm: p.area,
+                      splatter_count: p.count,
+                      splatter_density: p.density,
+                      splatter_size_mm: p.size,
+                    })
+                  }
+                  className="py-1 rounded text-[10px] font-bold border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {activeTab === 'layout' && (
           <div className="space-y-3">
             <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">

@@ -1104,6 +1104,32 @@ interface InternalBead {
   jaggedOffset?: THREE.Vector3;
 }
 
+// Instance buffer capacities for the three bead channels
+const TUBE_INSTANCE_CAP = 20000;
+const SPLATTER_INSTANCE_CAP = 30000;
+const CRATER_INSTANCE_CAP = 14000;
+const GOOD_INSTANCE_CAP = 5000;
+
+// Millimetre -> scene-world conversion used by the debug splatter controls. Matches the
+// existing bead sizing math (e.g. bead width mm * 0.0055) at roughly plate scale.
+const SPLATTER_MM_TO_WORLD = 0.0011;
+
+// Deterministic hash-based pseudo-random in [0, 1). Keyed off the bead/droplet index so the
+// scatter looks random but never jitters between frames (beads are re-rendered every frame).
+function hashRandom(seed: number): number {
+  const s = Math.sin(seed * 127.1 + 311.7) * 43758.5453123;
+  return s - Math.floor(s);
+}
+
+// Smooth 1D value noise built on hashRandom — used to steer the extruded tube path so the
+// weld "worm" wanders continuously instead of zig-zagging with white noise.
+function valueNoise(x: number): number {
+  const i0 = Math.floor(x);
+  const f = x - i0;
+  const t = f * f * (3 - 2 * f);
+  return THREE.MathUtils.lerp(hashRandom(i0), hashRandom(i0 + 1), t);
+}
+
 // Ultra-performant GPU Instanced Weld Beads renderer for stable spray, stacked dimes, cold worms, and overheated craters
 function WeldBeadsInstanced({
   beadsListRef,
@@ -1120,7 +1146,8 @@ function WeldBeadsInstanced({
   travelStatus?: TravelStatus;
 }) {
   const goodMeshRef = useRef<THREE.InstancedMesh>(null);
-  const wormMeshRef = useRef<THREE.InstancedMesh>(null);
+  const tubeMeshRef = useRef<THREE.InstancedMesh>(null);
+  const splatterMeshRef = useRef<THREE.InstancedMesh>(null);
   const craterMeshRef = useRef<THREE.InstancedMesh>(null);
 
   const dummy = useMemo(() => new THREE.Object3D(), []);
@@ -1146,9 +1173,27 @@ function WeldBeadsInstanced({
     []
   );
 
+  // Scratch objects reused by the tube-extrusion pass (avoids per-frame allocations)
+  const scratch = useMemo(
+    () => ({
+      forward: new THREE.Vector3(),
+      side: new THREE.Vector3(),
+      node: new THREE.Vector3(),
+      prevNode: new THREE.Vector3(),
+      dir: new THREE.Vector3(),
+      mid: new THREE.Vector3(),
+      capsuleUp: new THREE.Vector3(0, 1, 0),
+      segQuat: new THREE.Quaternion(),
+    }),
+    []
+  );
+
   // 1. Set up the Geometries
   const goodGeo = useMemo(() => new THREE.SphereGeometry(1, 20, 16), []);
-  const wormGeo = useMemo(() => new THREE.CapsuleGeometry(1, 1, 8, 8), []);
+  // Open cylinder used as the extrusion segment of the cold / hot weld tubes. Scaling
+  // (radius, length, radius) maps exactly onto the segment between two path nodes.
+  const tubeGeo = useMemo(() => new THREE.CylinderGeometry(1, 1, 1, 12, 1, false), []);
+  const splatterGeo = useMemo(() => new THREE.SphereGeometry(1, 8, 8), []);
   const craterGeo = useMemo(() => new THREE.CapsuleGeometry(1, 1, 8, 8), []);
 
   // Materials for 3 Separate Visual Channels
@@ -1163,7 +1208,17 @@ function WeldBeadsInstanced({
     []
   );
 
-  const wormMat = useMemo(
+  const tubeMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#ffffff',
+        metalness: 0.25,
+        roughness: 0.72,
+      }),
+    []
+  );
+
+  const splatterMat = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
         color: '#30343a',
@@ -1187,7 +1242,12 @@ function WeldBeadsInstanced({
 
   // Pre-initialize instanceColor attributes and disable frustum culling on all three meshes
   useEffect(() => {
-    const meshes = [goodMeshRef.current, wormMeshRef.current, craterMeshRef.current];
+    const meshes = [
+      goodMeshRef.current,
+      tubeMeshRef.current,
+      splatterMeshRef.current,
+      craterMeshRef.current,
+    ];
     meshes.forEach((mesh) => {
       if (mesh) {
         mesh.frustumCulled = false;
@@ -1209,14 +1269,22 @@ function WeldBeadsInstanced({
     const beads = beadsListRef.current;
     const totalCount = beads ? beads.length : 0;
 
-    if (!goodMeshRef.current || !wormMeshRef.current || !craterMeshRef.current) return;
+    if (
+      !goodMeshRef.current ||
+      !tubeMeshRef.current ||
+      !splatterMeshRef.current ||
+      !craterMeshRef.current
+    )
+      return;
 
     if (totalCount === 0) {
       goodMeshRef.current.count = 0;
-      wormMeshRef.current.count = 0;
+      tubeMeshRef.current.count = 0;
+      splatterMeshRef.current.count = 0;
       craterMeshRef.current.count = 0;
       goodMeshRef.current.instanceMatrix.needsUpdate = true;
-      wormMeshRef.current.instanceMatrix.needsUpdate = true;
+      tubeMeshRef.current.instanceMatrix.needsUpdate = true;
+      splatterMeshRef.current.instanceMatrix.needsUpdate = true;
       craterMeshRef.current.instanceMatrix.needsUpdate = true;
       return;
     }
@@ -1231,8 +1299,67 @@ function WeldBeadsInstanced({
         : (weldSettings.cooling_duration_sec ? 1.0 / weldSettings.cooling_duration_sec : 0.285);
 
     let goodCount = 0;
-    let wormCount = 0;
+    let tubeCount = 0;
+    let splatterInstanceCount = 0;
     let craterCount = 0;
+
+    // Debug-tunable splatter scatter controls
+    const splatterArea = Math.max(0, (weldSettings.splatter_area_mm ?? 60.0) * SPLATTER_MM_TO_WORLD);
+    const splatterCount = Math.max(0, Math.round(weldSettings.splatter_count ?? 7));
+    const splatterDensity = THREE.MathUtils.clamp(weldSettings.splatter_density ?? 0.85, 0, 1);
+    const splatterSize = Math.max(
+      0.0005,
+      (weldSettings.splatter_size_mm ?? 9.0) * SPLATTER_MM_TO_WORLD
+    );
+    const splatterVariance = THREE.MathUtils.clamp(weldSettings.splatter_size_variance ?? 0.6, 0, 1);
+
+    // Tube-extrusion chain state: the previous path node and the bead index it came from, so
+    // consecutive defect beads are stitched into one continuous extruded tube.
+    let prevTubeIndex = -1;
+    let prevTubeKind: 'cold' | 'hot' | null = null;
+    let hasPrevNode = false;
+
+    // Minimum forward progress (world units) allowed between two path nodes. This is what
+    // keeps the random extrusion path from ever walking backwards along the weld direction.
+    const minForwardStep = 0.0004;
+
+    // Builds the capsule/cylinder transform for one tube segment between the previously
+    // stored path node and `scratch.node`, clamping the new node so travel stays forward.
+    // Returns false when a new tube run is starting (nothing to connect to yet).
+    const buildTubeSegment = (
+      contiguous: boolean,
+      forward: THREE.Vector3,
+      radius: number,
+      lengthGain: number
+    ): boolean => {
+      let emitted = false;
+
+      if (contiguous && hasPrevNode) {
+        scratch.dir.subVectors(scratch.node, scratch.prevNode);
+        const along = scratch.dir.dot(forward);
+        if (along < minForwardStep) {
+          scratch.node.addScaledVector(forward, minForwardStep - along);
+          scratch.dir.subVectors(scratch.node, scratch.prevNode);
+        }
+
+        const segLength = scratch.dir.length();
+        if (segLength > 1e-6) {
+          scratch.dir.divideScalar(segLength);
+          scratch.mid.addVectors(scratch.prevNode, scratch.node).multiplyScalar(0.5);
+          scratch.segQuat.setFromUnitVectors(scratch.capsuleUp, scratch.dir);
+
+          dummy.position.copy(scratch.mid);
+          dummy.quaternion.copy(scratch.segQuat);
+          dummy.scale.set(radius, segLength * lengthGain, radius);
+          dummy.updateMatrix();
+          emitted = true;
+        }
+      }
+
+      scratch.prevNode.copy(scratch.node);
+      hasPrevNode = true;
+      return emitted;
+    };
 
     for (let i = 0; i < totalCount; i++) {
       const bead = beads[i];
@@ -1251,115 +1378,165 @@ function WeldBeadsInstanced({
       let sz = bead.scale.z * sm * wm;
 
       // ------------------------------------------------------------------------------------
-      // 2. TOO COLD / STUBBING: Narrow ropey worm bead — poor fusion, piled on top of the plate.
-      //    Realism: cold weld metal doesn't wet the base metal, so it beads up into a thin,
-      //    stringy rope with periodic nodules ("knots") rather than a smooth flat bead.
+      // 2. TOO COLD / STUBBING: Tube extrusion along a randomly wandering path that is
+      //    constrained to the weld travel direction, so the cold rope can never double back
+      //    on itself. Cold metal doesn't wet the plate, so it piles into a stringy worm.
       // ------------------------------------------------------------------------------------
       if (beadArc === 'too_cold_stubbing') {
-        // Rope cross-section radius (world-x width and world-y height). Cross-section stays
-        // small so the bead reads as a thin worm rather than a tall spike.
         const ropeRadius = Math.max(sx, sz) * 0.42;
 
-        // Per-bead nodule pulse — deterministic on the bead index so the knots don't jitter.
-        // Alternates ~narrow / ~fat sections along the path to sell the "stringy worm" look.
-        const nodulePulse = 1.0 + 0.35 * Math.sin(i * 2.1) + 0.12 * Math.sin(i * 0.73);
+        // Periodic fat / narrow knots along the rope (smooth noise, stable across frames).
+        const nodulePulse = 0.72 + valueNoise(i * 0.55) * 0.8;
 
-        // Length along the travel direction — a bit longer than one drop so adjacent worms
-        // overlap into a continuous rope instead of a chain of separated blobs.
-        const ropeLength = Math.max(sz, sx) * 1.35;
+        // Travel (local X) and cross-joint (local Z) axes of the deposited bead, flattened
+        // onto the plate plane so the extrusion path hugs the workpiece surface.
+        scratch.forward.set(1, 0, 0).applyQuaternion(bead.quaternion);
+        scratch.forward.y = 0;
+        if (scratch.forward.lengthSq() < 1e-8) scratch.forward.set(0, 0, 1);
+        scratch.forward.normalize();
+        scratch.side.set(0, 0, 1).applyQuaternion(bead.quaternion);
+        scratch.side.y = 0;
+        if (scratch.side.lengthSq() < 1e-8) scratch.side.set(1, 0, 0);
+        scratch.side.normalize();
 
-        dummy.position.copy(bead.pos);
+        // Random walk across the joint plus a little vertical wobble.
+        const lateral = (valueNoise(i * 0.3) - 0.5) * 2 * ropeRadius * 1.9;
+        const lift = valueNoise(i * 0.44 + 17.3) * ropeRadius * 0.45;
 
-        // Gentle side-to-side wobble (rope wanders across the joint because the arc is stubbing).
-        const rightVec = new THREE.Vector3(0, 0, 1).applyQuaternion(bead.quaternion);
-        dummy.position.addScaledVector(rightVec, Math.sin(i * 1.6) * ropeRadius * 0.9);
+        scratch.node.copy(bead.pos);
+        scratch.node.addScaledVector(scratch.side, lateral);
+        scratch.node.y = WORKPIECE_TOP_Y + ropeRadius * nodulePulse * 0.9 + lift;
 
-        // Rope sits ON the plate (poor penetration) — center at surface + one radius up.
-        dummy.position.y = WORKPIECE_TOP_Y + ropeRadius * nodulePulse * 0.9;
-
-        // Lay the capsule flat along the travel Z axis.
-        dummy.quaternion.copy(bead.quaternion).multiply(capsuleAlignZQuat);
-
-        // Scale: capsule length is on local-Y (which after the align-quat maps to travel Z).
-        // Cross-section is local-X (world-X width) and local-Z (world-Y height).
-        dummy.scale.set(
-          ropeRadius * nodulePulse,        // width across the joint
-          ropeLength,                       // length along travel
-          ropeRadius * nodulePulse * 1.05,  // vertical rope height, ~matches width => round rope
-        );
-        dummy.updateMatrix();
-
-        wormMeshRef.current.setMatrixAt(wormCount, dummy.matrix);
-        tempColor.copy(coldSlagColor);
-        wormMeshRef.current.setColorAt(wormCount, tempColor);
-        wormCount++;
+        const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'cold';
+        const segmentRadius = ropeRadius * nodulePulse;
+        if (
+          buildTubeSegment(contiguous, scratch.forward, segmentRadius, 1.18) &&
+          tubeCount < TUBE_INSTANCE_CAP
+        ) {
+          tubeMeshRef.current.setMatrixAt(tubeCount, dummy.matrix);
+          tempColor.copy(coldSlagColor);
+          tubeMeshRef.current.setColorAt(tubeCount, tempColor);
+          tubeCount++;
+        }
+        prevTubeIndex = i;
+        prevTubeKind = 'cold';
 
       // ------------------------------------------------------------------------------------
-      // 3. TOO HOT / GLOBULAR: Flat inconsistent crater bead with a spray of splatter droplets.
-      //    Realism: overheated GMAW blows the puddle out — the bead flattens and undercuts,
-      //    width varies from drop to drop, and molten spatter is thrown around the joint.
+      // 3. TOO HOT / GLOBULAR: The same forward-constrained tube extrusion, but bunched up —
+      //    the overheated puddle swells and pinches, sinks into the plate (undercut) and
+      //    leaves blown-out craters, with a random splatter scatter around the joint.
       // ------------------------------------------------------------------------------------
       } else if (beadArc === 'too_hot_globular') {
-        // Deterministic per-bead width/length variation so the bead reads as INCONSISTENT
-        // rather than a uniform giant disc. Ranges roughly 0.65x .. 1.35x of nominal.
-        const widthJitter = 1.0 + 0.35 * Math.sin(i * 1.3) + 0.10 * Math.sin(i * 0.41);
-        const lengthJitter = 1.0 + 0.25 * Math.sin(i * 0.9 + 1.2);
+        const baseRadius = Math.max(sx, sz) * 0.5;
 
-        // Flatter puddle profile — height is minimal, width/length dominate.
-        const poolWidth = sx * 0.95 * widthJitter;
-        const poolLength = sz * 1.15 * lengthJitter;
-        const poolHeight = sy * 0.35;
+        // Bunching: strong swell / pinch from segment to segment so the tube reads as a
+        // piled-up, uneven puddle rather than an even rope.
+        const bunch = 0.55 + valueNoise(i * 0.95 + 5.1) * 1.25;
+        const segmentRadius = baseRadius * bunch;
 
-        // Sit slightly recessed into the plate to sell the "crater" — the puddle has burned
-        // down into the base metal instead of sitting proud like a healthy bead.
-        dummy.position.copy(bead.pos);
-        dummy.position.y = WORKPIECE_TOP_Y - poolHeight * 0.20 + Math.sin(i * 4.7) * 0.0015;
+        scratch.forward.set(1, 0, 0).applyQuaternion(bead.quaternion);
+        scratch.forward.y = 0;
+        if (scratch.forward.lengthSq() < 1e-8) scratch.forward.set(0, 0, 1);
+        scratch.forward.normalize();
+        scratch.side.set(0, 0, 1).applyQuaternion(bead.quaternion);
+        scratch.side.y = 0;
+        if (scratch.side.lengthSq() < 1e-8) scratch.side.set(1, 0, 0);
+        scratch.side.normalize();
 
-        dummy.quaternion.copy(bead.quaternion).multiply(capsuleAlignZQuat);
-        dummy.scale.set(poolWidth, poolLength, poolHeight);
-        dummy.updateMatrix();
+        const lateral = (valueNoise(i * 0.52 + 31.7) - 0.5) * 2 * baseRadius * 1.6;
 
-        craterMeshRef.current.setMatrixAt(craterCount, dummy.matrix);
-        tempColor.set('#dc2626');
-        craterMeshRef.current.setColorAt(craterCount, tempColor);
-        craterCount++;
+        // Undercutting: the toes of the bead are burned away, so the tube sinks into the
+        // base metal instead of sitting proud on top of it.
+        const undercut = valueNoise(i * 0.72 + 91.2);
 
-        // Splatter droplets: several small charcoal beads scattered around the puddle.
-        // Deterministic offsets keyed off the bead index so droplets don't jitter each frame,
-        // and we cap wormCount to stay inside the reserved instance buffer.
-        const spatterCount = 7;
-        const spatterCap = 10000;
-        for (let sp = 0; sp < spatterCount && wormCount < spatterCap; sp++) {
-          // Deterministic pseudo-random offset in the plate plane.
-          const seed = i * 7.13 + sp * 2.917;
-          const angle = seed * 1.618;
-          const radius = 0.025 + (0.5 + 0.5 * Math.sin(seed * 3.1)) * 0.055;
-          const jitterX = Math.cos(angle) * radius;
-          const jitterZ = Math.sin(angle) * radius;
+        scratch.node.copy(bead.pos);
+        scratch.node.addScaledVector(scratch.side, lateral);
+        scratch.node.y = WORKPIECE_TOP_Y + segmentRadius * 0.5 - segmentRadius * undercut * 0.8;
 
-          // Droplet size varies (some tiny, some chunky) — a few big blobs sell "splatter".
-          const dropletScale = 0.006 + (0.5 + 0.5 * Math.sin(seed * 5.7)) * 0.012;
+        const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'hot';
+        if (
+          buildTubeSegment(contiguous, scratch.forward, segmentRadius, 1.25) &&
+          tubeCount < TUBE_INSTANCE_CAP
+        ) {
+          tubeMeshRef.current.setMatrixAt(tubeCount, dummy.matrix);
+          tempColor.set('#dc2626');
+          tubeMeshRef.current.setColorAt(tubeCount, tempColor);
+          tubeCount++;
+        }
+        prevTubeIndex = i;
+        prevTubeKind = 'hot';
 
-          dummy.position.copy(bead.pos);
-          dummy.position.x += jitterX;
-          dummy.position.z += jitterZ;
-          dummy.position.y = WORKPIECE_TOP_Y + dropletScale * 0.7;
-
-          // Neutralize orientation so droplets read as round blobs, not tiny tubes.
-          dummy.quaternion.identity();
-          dummy.scale.set(dropletScale, dropletScale * 0.6, dropletScale);
+        // Blown-out craters: periodic recessed pits burned down into the puddle.
+        if (hashRandom(i * 3.31) < 0.16 && craterCount < CRATER_INSTANCE_CAP) {
+          const craterRadius = segmentRadius * (1.1 + hashRandom(i * 5.77) * 0.8);
+          dummy.position.copy(scratch.node);
+          dummy.position.addScaledVector(scratch.side, (hashRandom(i * 8.19) - 0.5) * segmentRadius);
+          dummy.position.y = WORKPIECE_TOP_Y - craterRadius * 0.22;
+          dummy.quaternion.copy(bead.quaternion).multiply(capsuleAlignZQuat);
+          dummy.scale.set(craterRadius, craterRadius * 1.15, craterRadius * 0.28);
           dummy.updateMatrix();
 
-          wormMeshRef.current.setMatrixAt(wormCount, dummy.matrix);
+          craterMeshRef.current.setMatrixAt(craterCount, dummy.matrix);
           tempColor.copy(hotBurnCharcoal);
-          wormMeshRef.current.setColorAt(wormCount, tempColor);
-          wormCount++;
+          craterMeshRef.current.setColorAt(craterCount, tempColor);
+          craterCount++;
+        }
+
+        // Undercut groove: a dark sunken notch alongside the tube toe where the arc has
+        // eaten into the plate.
+        if (undercut > 0.55 && craterCount < CRATER_INSTANCE_CAP) {
+          const grooveSide = hashRandom(i * 13.7) < 0.5 ? 1 : -1;
+          dummy.position.copy(scratch.node);
+          dummy.position.addScaledVector(scratch.side, grooveSide * segmentRadius * 1.05);
+          dummy.position.y = WORKPIECE_TOP_Y - segmentRadius * 0.3;
+          dummy.quaternion.copy(bead.quaternion).multiply(capsuleAlignZQuat);
+          dummy.scale.set(segmentRadius * 0.32, segmentRadius * 1.5, segmentRadius * 0.3);
+          dummy.updateMatrix();
+
+          craterMeshRef.current.setMatrixAt(craterCount, dummy.matrix);
+          tempColor.copy(hotBurnCharcoal);
+          craterMeshRef.current.setColorAt(craterCount, tempColor);
+          craterCount++;
+        }
+
+        // Random splatter scatter — fully driven by the debug tool (area, count, density,
+        // size). Offsets are hash-seeded on the bead/droplet index so the scatter is random
+        // yet perfectly stable between frames.
+        if (splatterCount > 0 && hashRandom(i * 11.7 + 4.2) < splatterDensity) {
+          for (let sp = 0; sp < splatterCount && splatterInstanceCount < SPLATTER_INSTANCE_CAP; sp++) {
+            const seed = i * 7.13 + sp * 2.917;
+            const angle = hashRandom(seed) * Math.PI * 2;
+            // sqrt() keeps the droplets uniformly distributed over the scatter disc.
+            const radial = splatterArea * Math.sqrt(hashRandom(seed + 51.3));
+            const dropletRadius = Math.max(
+              0.0004,
+              splatterSize * 0.5 * (1 + (hashRandom(seed + 88.1) - 0.5) * 2 * splatterVariance)
+            );
+
+            dummy.position.copy(bead.pos);
+            dummy.position.x += Math.cos(angle) * radial;
+            dummy.position.z += Math.sin(angle) * radial;
+            dummy.position.y = WORKPIECE_TOP_Y + dropletRadius * 0.55;
+            dummy.quaternion.identity();
+            dummy.scale.set(dropletRadius, dropletRadius * 0.8, dropletRadius);
+            dummy.updateMatrix();
+
+            splatterMeshRef.current.setMatrixAt(splatterInstanceCount, dummy.matrix);
+            tempColor.copy(hotBurnCharcoal);
+            splatterMeshRef.current.setColorAt(splatterInstanceCount, tempColor);
+            splatterInstanceCount++;
+          }
         }
 
       // ------------------------------------------------------------------------------------
       // 1. STANDARD SYNERGISTIC SPRAY & STACKED DIMES
       // ------------------------------------------------------------------------------------
       } else {
+        // A healthy bead breaks any in-progress defect tube run.
+        prevTubeIndex = -1;
+        prevTubeKind = null;
+        hasPrevNode = false;
+
         dummy.position.copy(bead.pos);
         dummy.quaternion.copy(bead.quaternion);
 
@@ -1413,10 +1590,16 @@ function WeldBeadsInstanced({
       goodMeshRef.current.instanceColor.needsUpdate = true;
     }
 
-    wormMeshRef.current.count = wormCount;
-    wormMeshRef.current.instanceMatrix.needsUpdate = true;
-    if (wormMeshRef.current.instanceColor) {
-      wormMeshRef.current.instanceColor.needsUpdate = true;
+    tubeMeshRef.current.count = tubeCount;
+    tubeMeshRef.current.instanceMatrix.needsUpdate = true;
+    if (tubeMeshRef.current.instanceColor) {
+      tubeMeshRef.current.instanceColor.needsUpdate = true;
+    }
+
+    splatterMeshRef.current.count = splatterInstanceCount;
+    splatterMeshRef.current.instanceMatrix.needsUpdate = true;
+    if (splatterMeshRef.current.instanceColor) {
+      splatterMeshRef.current.instanceColor.needsUpdate = true;
     }
 
     craterMeshRef.current.count = craterCount;
@@ -1431,23 +1614,31 @@ function WeldBeadsInstanced({
       {/* 1. Good / Standard Synergistic Spray Beads */}
       <instancedMesh
         ref={goodMeshRef}
-        args={[goodGeo, goodMat, 5000]}
+        args={[goodGeo, goodMat, GOOD_INSTANCE_CAP]}
         frustumCulled={false}
         castShadow
         receiveShadow
       />
-      {/* 2. Stringy ropey worm capsules (too-cold poor fusion) & charcoal splatter droplets (too-hot puddle blow-out) */}
+      {/* 2. Extruded tube segments: cold stringy worm rope & bunched-up overheated puddle */}
       <instancedMesh
-        ref={wormMeshRef}
-        args={[wormGeo, wormMat, 10000]}
+        ref={tubeMeshRef}
+        args={[tubeGeo, tubeMat, TUBE_INSTANCE_CAP]}
         frustumCulled={false}
         castShadow
         receiveShadow
       />
-      {/* 3. Overheated flat crater puddles (too-hot inconsistent burn-through pool) */}
+      {/* 2b. Charcoal splatter droplets scattered around an over-heated puddle */}
+      <instancedMesh
+        ref={splatterMeshRef}
+        args={[splatterGeo, splatterMat, SPLATTER_INSTANCE_CAP]}
+        frustumCulled={false}
+        castShadow
+        receiveShadow
+      />
+      {/* 3. Blown-out craters & undercut grooves burned into an over-heated joint */}
       <instancedMesh
         ref={craterMeshRef}
-        args={[craterGeo, craterMat, 5000]}
+        args={[craterGeo, craterMat, CRATER_INSTANCE_CAP]}
         frustumCulled={false}
         castShadow
         receiveShadow
