@@ -1,0 +1,6 @@
+{
+  "name": "6-Axis Robot Simulation & Games",
+  "description": "Interactive 3D 6-axis industrial robot arm simulation featuring custom metal fabrication forging, sandbox free play, conveyor sorting challenges, precision stacking puzzles, and teach pendant programming.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
