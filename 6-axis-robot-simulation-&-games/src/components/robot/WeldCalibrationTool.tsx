@@ -15,6 +15,9 @@ import {
   Snowflake,
   ShieldCheck,
   AlertTriangle,
+  Plus,
+  Trash2,
+  Spline,
 } from 'lucide-react';
 import {
   WireProfile,
@@ -24,6 +27,15 @@ import {
   calculateSynergisticGeometry,
   ArcStatus,
   WeldHealth,
+  GeometryCurve,
+  GeometryCurvePoint,
+  sampleGeometryCurve,
+  evaluateGeometryGate,
+  buildDefaultGeometryCurve,
+  normalizeGeometryCurve,
+  GEOMETRY_CURVE_MIN_SPEED,
+  GEOMETRY_CURVE_MAX_SPEED,
+  GEOMETRY_CURVE_MAX_WIDTH,
 } from './weldProfiles';
 import { useDebugSettings } from '../../hooks/useDebugSettings';
 
@@ -147,6 +159,63 @@ export default function WeldCalibrationTool({
     setTimeout(() => setSaveStatus('idle'), 2000);
   };
 
+  // ---------------------------------------------------------------------------
+  // GATE 2 CALIBRATION CURVE (user-authored target bead width vs. travel speed)
+  // ---------------------------------------------------------------------------
+  const curve: GeometryCurve = normalizeGeometryCurve(
+    activeProfile.geometryCurve,
+    activeProfile.targetWidth,
+    activeProfile.baseSpeed
+  );
+
+  const applyCurve = (partial: Partial<GeometryCurve>) => {
+    handleUpdateActiveProfile({
+      ...activeProfile,
+      geometryCurve: normalizeGeometryCurve(
+        { ...curve, ...partial },
+        activeProfile.targetWidth,
+        activeProfile.baseSpeed
+      ),
+    });
+  };
+
+  const handleCurvePointChange = (index: number, field: 'speed' | 'width', val: number) => {
+    if (!Number.isFinite(val)) return;
+    const points = curve.points.map((pt, i) => (i === index ? { ...pt, [field]: val } : pt));
+    applyCurve({ points });
+  };
+
+  const handleAddCurvePoint = () => {
+    // Insert a new control point in the middle of the widest speed gap
+    const pts = curve.points;
+    let gapIndex = 0;
+    let widestGap = -1;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const gap = pts[i + 1].speed - pts[i].speed;
+      if (gap > widestGap) {
+        widestGap = gap;
+        gapIndex = i;
+      }
+    }
+    const midSpeed = (pts[gapIndex].speed + pts[gapIndex + 1].speed) / 2;
+    const midWidth = sampleGeometryCurve(curve, midSpeed);
+    applyCurve({
+      points: [
+        ...pts,
+        { speed: Number(midSpeed.toFixed(1)), width: Number(midWidth.toFixed(2)) },
+      ],
+    });
+  };
+
+  const handleRemoveCurvePoint = (index: number) => {
+    if (curve.points.length <= 2) return;
+    applyCurve({ points: curve.points.filter((_, i) => i !== index) });
+  };
+
+  const handleResetCurve = () => {
+    applyCurve(buildDefaultGeometryCurve(activeProfile.targetWidth, activeProfile.baseSpeed));
+  };
+
   // Two-Gate Live Calculations
   const stability = evaluateArcStability(currentVolt, currentWFS, activeProfile);
   const geometry = calculateSynergisticGeometry(currentVolt, currentWFS, currentSpeed, activeProfile);
@@ -192,16 +261,37 @@ export default function WeldCalibrationTool({
   const stabilityBandPolygon = `M ${wfsMinX.toFixed(1)} ${upperMinY.toFixed(1)} L ${wfsMaxX.toFixed(1)} ${upperMaxY.toFixed(1)} L ${wfsMaxX.toFixed(1)} ${lowerMaxY.toFixed(1)} L ${wfsMinX.toFixed(1)} ${lowerMinY.toFixed(1)} Z`;
   const idealSynergisticLine = `M ${wfsMinX.toFixed(1)} ${voltMinAtMinWfsY.toFixed(1)} L ${wfsMaxX.toFixed(1)} ${voltMaxAtMaxWfsY.toFixed(1)}`;
 
+  // Gate 2 acceptance of the live bead against the calibration curve
+  const geometryGate = evaluateGeometryGate(geometry.width, currentSpeed, activeProfile);
+
   // CHART 2: Bead Geometry vs. Travel Speed (0 to 200 cm/min)
   const geometrySpeedPoints = useMemo(() => {
-    const pts = [];
-    for (let s = 5; s <= 200; s += 5) {
+    const pts: {
+      speed: number;
+      width: number;
+      targetWidth: number;
+      tolHigh: number;
+      tolLow: number;
+      failHigh: number;
+      failLow: number;
+    }[] = [];
+    const tol = curve.tolerancePct / 100;
+    const hard = Math.max(curve.tolerancePct, curve.hardFailPct) / 100;
+    for (let s = GEOMETRY_CURVE_MIN_SPEED; s <= GEOMETRY_CURVE_MAX_SPEED; s += 2.5) {
       const g = calculateSynergisticGeometry(currentVolt, currentWFS, s, activeProfile);
-      const target = calculateSynergisticGeometry(activeProfile.volts.opt, activeProfile.wfs.opt, s, activeProfile);
-      pts.push({ speed: s, width: g.width, targetWidth: target.width });
+      const target = sampleGeometryCurve(curve, s);
+      pts.push({
+        speed: s,
+        width: g.width,
+        targetWidth: target,
+        tolHigh: target * (1 + tol),
+        tolLow: target * (1 - tol),
+        failHigh: target * (1 + hard),
+        failLow: target * (1 - hard),
+      });
     }
     return pts;
-  }, [currentVolt, currentWFS, activeProfile]);
+  }, [currentVolt, currentWFS, activeProfile, curve]);
 
   const mapSpeedX = (speed: number) => {
     const clamped = Math.max(0, Math.min(200, speed));
@@ -220,6 +310,24 @@ export default function WeldCalibrationTool({
   const targetWidthPath = geometrySpeedPoints
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${mapSpeedX(p.speed).toFixed(1)} ${mapBeadWidthY(p.targetWidth).toFixed(1)}`)
     .join(' ');
+
+  const buildBandArea = (
+    upper: (p: (typeof geometrySpeedPoints)[number]) => number,
+    lower: (p: (typeof geometrySpeedPoints)[number]) => number
+  ) => {
+    const top = geometrySpeedPoints
+      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${mapSpeedX(p.speed).toFixed(1)} ${mapBeadWidthY(upper(p)).toFixed(1)}`)
+      .join(' ');
+    const bottom = [...geometrySpeedPoints]
+      .reverse()
+      .map((p) => `L ${mapSpeedX(p.speed).toFixed(1)} ${mapBeadWidthY(lower(p)).toFixed(1)}`)
+      .join(' ');
+    return `${top} ${bottom} Z`;
+  };
+
+  const toleranceBandArea = buildBandArea((p) => p.tolHigh, (p) => p.tolLow);
+  const hotFailBandArea = buildBandArea((p) => p.failHigh, (p) => p.tolHigh);
+  const coldFailBandArea = buildBandArea((p) => p.tolLow, (p) => p.failLow);
 
   if (isCollapsed && !isEmbedded) {
     return (
@@ -555,32 +663,68 @@ export default function WeldCalibrationTool({
             <line x1={mapSpeedX(100)} y1="0" x2={mapSpeedX(100)} y2="200" stroke="#334155" strokeDasharray="3 3" strokeOpacity="0.4" />
             <line x1={mapSpeedX(150)} y1="0" x2={mapSpeedX(150)} y2="200" stroke="#334155" strokeDasharray="3 3" strokeOpacity="0.4" />
 
-            {/* Target Curve */}
-            <path d={targetWidthPath} fill="none" stroke="#64748b" strokeWidth="2" strokeDasharray="4 2" />
+            {/* Hard Failure Bands (beyond hard-fail %) */}
+            <path d={hotFailBandArea} fill="#f97316" fillOpacity="0.14" stroke="#f97316" strokeOpacity="0.4" strokeWidth="1" strokeDasharray="3 3" />
+            <path d={coldFailBandArea} fill="#0ea5e9" fillOpacity="0.14" stroke="#0ea5e9" strokeOpacity="0.4" strokeWidth="1" strokeDasharray="3 3" />
+
+            {/* Acceptance Tolerance Band */}
+            <path d={toleranceBandArea} fill="#22c55e" fillOpacity="0.22" stroke="#22c55e" strokeOpacity="0.55" strokeWidth="1" />
+
+            {/* Calibration Target Curve */}
+            <path d={targetWidthPath} fill="none" stroke="#eab308" strokeWidth="2.5" strokeLinecap="round" />
+
+            {/* Editable Control Points */}
+            {curve.points.map((pt, idx) => (
+              <circle
+                key={`cp-${idx}`}
+                cx={mapSpeedX(pt.speed)}
+                cy={mapBeadWidthY(pt.width)}
+                r="4"
+                fill="#facc15"
+                stroke="#0f172a"
+                strokeWidth="1.5"
+              />
+            ))}
 
             {/* Active Deposited Geometry Curve */}
-            <path d={geomWidthPath} fill="none" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
+            <path d={geomWidthPath} fill="none" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="5 3" />
+
+            {/* Zone Labels */}
+            <text x="24" y="16" fill="#fb923c" fontSize="8" fontFamily="monospace" className="font-bold opacity-80">
+              ▲ TOO HOT (&gt;+{curve.tolerancePct.toFixed(0)}%) · HARD FAIL (&gt;+{curve.hardFailPct.toFixed(0)}%)
+            </text>
+            <text x="24" y="192" fill="#38bdf8" fontSize="8" fontFamily="monospace" className="font-bold opacity-80">
+              ▼ TOO COLD (&lt;-{curve.tolerancePct.toFixed(0)}%) · HARD FAIL (&lt;-{curve.hardFailPct.toFixed(0)}%)
+            </text>
 
             {/* Current Point */}
             <circle
               cx={mapSpeedX(currentSpeed)}
               cy={mapBeadWidthY(geometry.width)}
               r="6.5"
-              fill="#38bdf8"
+              fill={
+                geometryGate.gateStatus === 'in_band'
+                  ? '#22c55e'
+                  : geometryGate.gateStatus === 'too_hot'
+                  ? '#f97316'
+                  : geometryGate.gateStatus === 'too_cold'
+                  ? '#0ea5e9'
+                  : '#ef4444'
+              }
               stroke="#ffffff"
               strokeWidth="2"
               className="animate-pulse"
             />
 
             <text
-              x={Math.min(270, Math.max(30, mapSpeedX(currentSpeed) + 10))}
+              x={Math.min(250, Math.max(30, mapSpeedX(currentSpeed) + 10))}
               y={Math.max(24, Math.min(170, mapBeadWidthY(geometry.width) - 8))}
               fill="#38bdf8"
               fontSize="10"
               fontFamily="monospace"
               className="font-bold"
             >
-              {currentSpeed} cm/min ({geometry.width.toFixed(1)}mm W)
+              {currentSpeed} cm/min ({geometry.width.toFixed(1)}mm W · target {geometryGate.targetWidth.toFixed(1)}mm)
             </text>
           </svg>
         )}
@@ -593,6 +737,142 @@ export default function WeldCalibrationTool({
           {activeChartTab === 'stability' ? '↑ Arc Voltage (14–34 Volts)' : '↑ Bead Width (0–22 mm)'}
         </span>
       </div>
+
+      {/* GATE 2 CALIBRATION CURVE EDITOR */}
+      {activeChartTab === 'geometry' && (
+        <div className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2">
+          <div className="flex items-center justify-between border-b border-slate-800/80 pb-1">
+            <div className="flex items-center gap-1.5 text-cyan-300 font-bold text-[11px]">
+              <Spline size={11} className="text-cyan-300" />
+              <span>Gate 2 Bead Geometry Curve</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${
+                  geometryGate.gateStatus === 'in_band'
+                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                    : geometryGate.gateStatus === 'too_hot'
+                    ? 'bg-orange-500/10 text-orange-300 border-orange-500/30'
+                    : geometryGate.gateStatus === 'too_cold'
+                    ? 'bg-sky-500/10 text-sky-300 border-sky-500/30'
+                    : 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                }`}
+              >
+                {geometryGate.deviationPct >= 0 ? '+' : ''}
+                {geometryGate.deviationPct.toFixed(0)}% vs curve
+              </span>
+              <button
+                type="button"
+                onClick={handleAddCurvePoint}
+                className="px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                title="Add a control point at the widest speed gap"
+              >
+                <Plus size={10} />
+                <span>Add Point</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleResetCurve}
+                className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-700 text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                title="Rebuild the factory default curve"
+              >
+                <RotateCcw size={10} />
+                <span>Reset Curve</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Smoothness / Tolerance / Hard Fail */}
+          <div className="grid grid-cols-3 gap-2 text-[10px]">
+            <div className="flex flex-col gap-0.5 col-span-1">
+              <span className="text-slate-400">
+                Smoothness: <strong className="text-cyan-300">{curve.smoothness.toFixed(1)}</strong>{' '}
+                <span className="text-slate-500">{curve.smoothness === 0 ? '(linear)' : '(spline)'}</span>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={10}
+                step={0.5}
+                value={curve.smoothness}
+                onChange={(e) => applyCurve({ smoothness: parseFloat(e.target.value) })}
+                className="w-full accent-cyan-400 cursor-pointer"
+              />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-emerald-400">Tolerance Band (±%)</span>
+              <input
+                type="number"
+                step="1"
+                min={1}
+                max={100}
+                value={curve.tolerancePct}
+                onChange={(e) => applyCurve({ tolerancePct: parseFloat(e.target.value) })}
+                className="bg-slate-900 px-2 py-1 rounded border border-emerald-500/50 text-emerald-300 font-bold text-center focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-rose-400">Hard Fail Band (±%)</span>
+              <input
+                type="number"
+                step="1"
+                min={2}
+                max={300}
+                value={curve.hardFailPct}
+                onChange={(e) => applyCurve({ hardFailPct: parseFloat(e.target.value) })}
+                className="bg-slate-900 px-2 py-1 rounded border border-rose-500/50 text-rose-300 font-bold text-center focus:outline-none focus:border-rose-400"
+              />
+            </div>
+          </div>
+
+          {/* Control Point Table */}
+          <div className="max-h-[104px] overflow-y-auto pr-0.5 space-y-1">
+            {curve.points.map((pt: GeometryCurvePoint, idx: number) => (
+              <div key={`row-${idx}`} className="grid grid-cols-[18px_1fr_1fr_22px] gap-1.5 items-center text-[10px]">
+                <span className="text-slate-500 font-bold text-center">{idx + 1}</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-400 w-[38px]">Speed</span>
+                  <input
+                    type="number"
+                    step="1"
+                    min={GEOMETRY_CURVE_MIN_SPEED}
+                    max={GEOMETRY_CURVE_MAX_SPEED}
+                    value={pt.speed}
+                    onChange={(e) => handleCurvePointChange(idx, 'speed', parseFloat(e.target.value))}
+                    className="w-full bg-slate-900 px-1.5 py-0.5 rounded border border-slate-700 text-slate-200 font-bold text-center focus:outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-400 w-[38px]">Width</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min={0.1}
+                    max={GEOMETRY_CURVE_MAX_WIDTH}
+                    value={pt.width}
+                    onChange={(e) => handleCurvePointChange(idx, 'width', parseFloat(e.target.value))}
+                    className="w-full bg-slate-900 px-1.5 py-0.5 rounded border border-slate-700 text-yellow-300 font-bold text-center focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveCurvePoint(idx)}
+                  disabled={curve.points.length <= 2}
+                  className="p-1 rounded text-slate-500 hover:text-rose-300 hover:bg-rose-500/10 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                  title="Remove control point"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-[9px] text-slate-500 leading-snug">
+            Bead width above the tolerance band triggers the too-hot weld animation, below it triggers the
+            too-cold animation, and anything past the hard-fail band is a rejected weld.
+          </p>
+        </div>
+      )}
 
       {/* MANUFACTURER SPEC SHEET INPUT FIELDS (MIN / OPT / MAX) */}
       <div className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2">

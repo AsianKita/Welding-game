@@ -4,6 +4,23 @@ export interface WeldSpec {
   max: number;
 }
 
+/** A single user-placed control point of the Gate 2 bead geometry curve. */
+export interface GeometryCurvePoint {
+  speed: number; // cm/min (X axis)
+  width: number; // mm target bead width (Y axis)
+}
+
+/**
+ * Gate 2 calibration curve: a user-editable target bead-width curve instead of a
+ * fixed linear range, plus the acceptance band and the hard failure band.
+ */
+export interface GeometryCurve {
+  points: GeometryCurvePoint[]; // >= 2 control points, sorted by speed
+  smoothness: number; // 0 = linear point-to-point .. 10 = fully smooth spline
+  tolerancePct: number; // ± % around the curve that still counts as a good weld
+  hardFailPct: number; // ± % beyond which the weld hard-fails (no deposition)
+}
+
 export interface WireProfile {
   id: string;
   name: string;
@@ -13,7 +30,12 @@ export interface WireProfile {
   baseSpeed: number; // cm/min
   targetWidth: number; // mm
   targetHeight: number; // mm
+  geometryCurve?: GeometryCurve; // Gate 2 tuning curve
 }
+
+export const GEOMETRY_CURVE_MIN_SPEED = 5;
+export const GEOMETRY_CURVE_MAX_SPEED = 200;
+export const GEOMETRY_CURVE_MAX_WIDTH = 22;
 
 export type ArcStatus =
   | 'stable_spray'
@@ -128,11 +150,210 @@ export const DEFAULT_WIRE_PROFILES: Record<string, WireProfile> = {
 };
 
 /**
+ * Builds the factory default Gate 2 curve for a profile. Deposit volume is conserved,
+ * so the target bead width falls off with the square root of travel speed.
+ */
+export function buildDefaultGeometryCurve(targetWidth: number, baseSpeed: number): GeometryCurve {
+  const safeBase = Math.max(GEOMETRY_CURVE_MIN_SPEED, baseSpeed || 30);
+  const safeWidth = Math.max(0.5, targetWidth || 9.5);
+  const speeds = [safeBase * 0.35, safeBase * 0.7, safeBase, safeBase * 2, safeBase * 4];
+
+  return {
+    points: speeds.map((s) => {
+      const speed = clampCurveSpeed(s);
+      return {
+        speed: Number(speed.toFixed(1)),
+        width: Number(
+          Math.min(GEOMETRY_CURVE_MAX_WIDTH, safeWidth * Math.sqrt(safeBase / speed)).toFixed(2)
+        ),
+      };
+    }),
+    smoothness: 5,
+    tolerancePct: 15,
+    hardFailPct: 45,
+  };
+}
+
+function clampCurveSpeed(speed: number): number {
+  return Math.max(GEOMETRY_CURVE_MIN_SPEED, Math.min(GEOMETRY_CURVE_MAX_SPEED, speed));
+}
+
+/** Sanitizes any (possibly legacy / user-authored) curve object into a usable curve. */
+export function normalizeGeometryCurve(
+  rawCurve: any,
+  targetWidth: number,
+  baseSpeed: number
+): GeometryCurve {
+  const fallback = buildDefaultGeometryCurve(targetWidth, baseSpeed);
+  if (!rawCurve || typeof rawCurve !== 'object') return fallback;
+
+  const rawPoints = Array.isArray(rawCurve.points) ? rawCurve.points : [];
+  const points: GeometryCurvePoint[] = rawPoints
+    .filter(
+      (p: any) =>
+        p && typeof p.speed === 'number' && typeof p.width === 'number' &&
+        Number.isFinite(p.speed) && Number.isFinite(p.width)
+    )
+    .map((p: any) => ({
+      speed: clampCurveSpeed(p.speed),
+      width: Math.max(0.1, Math.min(GEOMETRY_CURVE_MAX_WIDTH, p.width)),
+    }))
+    .sort((a: GeometryCurvePoint, b: GeometryCurvePoint) => a.speed - b.speed);
+
+  if (points.length < 2) return fallback;
+
+  return {
+    points,
+    smoothness: THREE_clamp(typeof rawCurve.smoothness === 'number' ? rawCurve.smoothness : 5, 0, 10),
+    tolerancePct: THREE_clamp(
+      typeof rawCurve.tolerancePct === 'number' ? rawCurve.tolerancePct : 15,
+      1,
+      100
+    ),
+    hardFailPct: THREE_clamp(
+      typeof rawCurve.hardFailPct === 'number' ? rawCurve.hardFailPct : 45,
+      2,
+      300
+    ),
+  };
+}
+
+function THREE_clamp(v: number, min: number, max: number): number {
+  if (!Number.isFinite(v)) return min;
+  return Math.max(min, Math.min(max, v));
+}
+
+/**
+ * Samples the Gate 2 curve at a travel speed.
+ * smoothness 0 = strict linear point-to-point, 10 = fully smooth Catmull-Rom spline.
+ */
+export function sampleGeometryCurve(curve: GeometryCurve, speed: number): number {
+  const pts = curve.points;
+  if (!pts || pts.length === 0) return 0;
+  if (pts.length === 1) return pts[0].width;
+
+  const x = clampCurveSpeed(speed);
+  if (x <= pts[0].speed) return pts[0].width;
+  if (x >= pts[pts.length - 1].speed) return pts[pts.length - 1].width;
+
+  let seg = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (x >= pts[i].speed && x <= pts[i + 1].speed) {
+      seg = i;
+      break;
+    }
+  }
+
+  const p1 = pts[seg];
+  const p2 = pts[seg + 1];
+  const span = p2.speed - p1.speed;
+  const t = span > 1e-6 ? (x - p1.speed) / span : 0;
+
+  const linear = p1.width + (p2.width - p1.width) * t;
+
+  const blend = THREE_clamp(curve.smoothness ?? 0, 0, 10) / 10;
+  if (blend <= 0) return linear;
+
+  // Catmull-Rom spline through the neighbouring control points
+  const p0 = pts[seg - 1] || p1;
+  const p3 = pts[seg + 2] || p2;
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const spline =
+    0.5 *
+    (2 * p1.width +
+      (-p0.width + p2.width) * t +
+      (2 * p0.width - 5 * p1.width + 4 * p2.width - p3.width) * t2 +
+      (-p0.width + 3 * p1.width - 3 * p2.width + p3.width) * t3);
+
+  return linear + (spline - linear) * blend;
+}
+
+export type GeometryGateStatus =
+  | 'in_band'
+  | 'too_hot'
+  | 'too_cold'
+  | 'failed_high'
+  | 'failed_low';
+
+export interface GeometryGateResult {
+  gateStatus: GeometryGateStatus;
+  targetWidth: number;
+  deviationPct: number; // signed % deviation from the curve
+  message: string;
+}
+
+/**
+ * Gate 2 acceptance test: compares the deposited bead width against the calibration
+ * curve at the current travel speed.
+ * - within ± tolerance: good weld
+ * - above tolerance: too hot (over-deposit / burn-in)
+ * - below tolerance: too cold (underfill)
+ * - beyond the hard-fail band: hard failure
+ */
+export function evaluateGeometryGate(
+  actualWidth: number,
+  currentSpeed: number,
+  profile: WireProfile
+): GeometryGateResult {
+  const norm = normalizeWireProfile(profile);
+  const curve = norm.geometryCurve as GeometryCurve;
+  const targetWidth = sampleGeometryCurve(curve, currentSpeed);
+
+  if (targetWidth <= 0) {
+    return { gateStatus: 'in_band', targetWidth: 0, deviationPct: 0, message: '✓ Bead Geometry On Curve' };
+  }
+
+  const deviationPct = ((actualWidth - targetWidth) / targetWidth) * 100;
+  const tol = curve.tolerancePct;
+  const hard = Math.max(tol, curve.hardFailPct);
+
+  if (deviationPct > hard) {
+    return {
+      gateStatus: 'failed_high',
+      targetWidth,
+      deviationPct,
+      message: '🛑 Hard Fail: Bead Grossly Oversized (Burn-Through)',
+    };
+  }
+  if (deviationPct < -hard) {
+    return {
+      gateStatus: 'failed_low',
+      targetWidth,
+      deviationPct,
+      message: '🛑 Hard Fail: No Fusion / Bead Grossly Undersized',
+    };
+  }
+  if (deviationPct > tol) {
+    return {
+      gateStatus: 'too_hot',
+      targetWidth,
+      deviationPct,
+      message: '🌋 Too Hot: Bead Above Geometry Curve',
+    };
+  }
+  if (deviationPct < -tol) {
+    return {
+      gateStatus: 'too_cold',
+      targetWidth,
+      deviationPct,
+      message: '❄️ Too Cold: Bead Below Geometry Curve',
+    };
+  }
+  return {
+    gateStatus: 'in_band',
+    targetWidth,
+    deviationPct,
+    message: '✓ Bead Geometry Within Tolerance Band',
+  };
+}
+
+/**
  * Normalizes any profile object (including legacy profiles loaded from localStorage)
  * to ensure all synergistic spec sheet fields exist safely without crashing.
  */
 export function normalizeWireProfile(rawProfile: any): WireProfile {
-  if (!rawProfile) return DEFAULT_WIRE_PROFILES.fcaw_045;
+  if (!rawProfile) rawProfile = DEFAULT_WIRE_PROFILES.fcaw_045;
 
   const id = rawProfile.id || 'fcaw_045';
   const defaultMatch = DEFAULT_WIRE_PROFILES[id] || DEFAULT_WIRE_PROFILES.fcaw_045;
@@ -161,6 +382,7 @@ export function normalizeWireProfile(rawProfile: any): WireProfile {
     baseSpeed,
     targetWidth,
     targetHeight,
+    geometryCurve: normalizeGeometryCurve(rawProfile.geometryCurve, targetWidth, baseSpeed),
   };
 }
 

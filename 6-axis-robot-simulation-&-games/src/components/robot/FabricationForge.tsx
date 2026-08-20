@@ -1330,20 +1330,30 @@ function WeldBeadsInstanced({
       contiguous: boolean,
       forward: THREE.Vector3,
       radius: number,
-      lengthGain: number
+      lengthGain: number,
+      maxSegLength: number
     ): boolean => {
       let emitted = false;
 
       if (contiguous && hasPrevNode) {
         scratch.dir.subVectors(scratch.node, scratch.prevNode);
         const along = scratch.dir.dot(forward);
+        // Only nudge the node forward when it barely lags behind. A large backwards
+        // projection means the path just changed direction (or the run is stale), in
+        // which case we start a fresh run instead of stretching a tube backwards to a
+        // previous — or even the initial — point.
         if (along < minForwardStep) {
-          scratch.node.addScaledVector(forward, minForwardStep - along);
-          scratch.dir.subVectors(scratch.node, scratch.prevNode);
+          const shift = minForwardStep - along;
+          if (shift <= maxSegLength) {
+            scratch.node.addScaledVector(forward, shift);
+            scratch.dir.subVectors(scratch.node, scratch.prevNode);
+          } else {
+            scratch.dir.set(0, 0, 0);
+          }
         }
 
         const segLength = scratch.dir.length();
-        if (segLength > 1e-6) {
+        if (segLength > 1e-6 && segLength <= maxSegLength) {
           scratch.dir.divideScalar(segLength);
           scratch.mid.addVectors(scratch.prevNode, scratch.node).multiplyScalar(0.5);
           scratch.segQuat.setFromUnitVectors(scratch.capsuleUp, scratch.dir);
@@ -1372,6 +1382,12 @@ function WeldBeadsInstanced({
 
       const beadArc = bead.arcStatus || arcStatus;
       const beadTravel = bead.travelStatus || travelStatus;
+
+      // Distance the torch actually travelled between this bead and the previous one.
+      // Any tube segment longer than a few of these gaps is a path discontinuity
+      // (corner, restart, or skipped bead) and must break the extruded run.
+      const prevBead = i > 0 ? beads[i - 1] : null;
+      const beadGap = prevBead && prevBead.pos ? bead.pos.distanceTo(prevBead.pos) : 0;
 
       let sx = bead.scale.x * sm;
       let sy = bead.scale.y * sm * hm;
@@ -1409,8 +1425,9 @@ function WeldBeadsInstanced({
 
         const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'cold';
         const segmentRadius = ropeRadius * nodulePulse;
+        const maxSegLength = Math.max(ropeRadius * 3.0, beadGap * 2.5);
         if (
-          buildTubeSegment(contiguous, scratch.forward, segmentRadius, 1.18) &&
+          buildTubeSegment(contiguous, scratch.forward, segmentRadius, 1.18, maxSegLength) &&
           tubeCount < TUBE_INSTANCE_CAP
         ) {
           tubeMeshRef.current.setMatrixAt(tubeCount, dummy.matrix);
@@ -1431,7 +1448,7 @@ function WeldBeadsInstanced({
 
         // Bunching: strong swell / pinch from segment to segment so the tube reads as a
         // piled-up, uneven puddle rather than an even rope.
-        const bunch = 0.55 + valueNoise(i * 0.95 + 5.1) * 1.25;
+        const bunch = 0.7 + valueNoise(i * 0.95 + 5.1) * 0.85;
         const segmentRadius = baseRadius * bunch;
 
         scratch.forward.set(1, 0, 0).applyQuaternion(bead.quaternion);
@@ -1443,7 +1460,7 @@ function WeldBeadsInstanced({
         if (scratch.side.lengthSq() < 1e-8) scratch.side.set(1, 0, 0);
         scratch.side.normalize();
 
-        const lateral = (valueNoise(i * 0.52 + 31.7) - 0.5) * 2 * baseRadius * 1.6;
+        const lateral = (valueNoise(i * 0.52 + 31.7) - 0.5) * 2 * baseRadius * 0.55;
 
         // Undercutting: the toes of the bead are burned away, so the tube sinks into the
         // base metal instead of sitting proud on top of it.
@@ -1454,8 +1471,9 @@ function WeldBeadsInstanced({
         scratch.node.y = WORKPIECE_TOP_Y + segmentRadius * 0.5 - segmentRadius * undercut * 0.8;
 
         const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'hot';
+        const maxSegLength = Math.max(baseRadius * 3.0, beadGap * 2.5);
         if (
-          buildTubeSegment(contiguous, scratch.forward, segmentRadius, 1.25) &&
+          buildTubeSegment(contiguous, scratch.forward, segmentRadius, 1.25, maxSegLength) &&
           tubeCount < TUBE_INSTANCE_CAP
         ) {
           tubeMeshRef.current.setMatrixAt(tubeCount, dummy.matrix);
@@ -1845,8 +1863,7 @@ function InteractiveFabricationScene({
   // Stage 3: Robotic Welding Execution Loop
   useFrame((state, delta) => {
     if (phase === 'execute' && isWelding && weldNodes.length > 1) {
-      const i = currentSegmentIndexRef.current;
-      if (i >= weldNodes.length - 1) {
+      if (currentSegmentIndexRef.current >= weldNodes.length - 1) {
         // Complete weld path trajectory safely - solidify and preserve all beads
         setBeadCount(beadsListRef.current.length);
         setIsWelding(false);
@@ -1855,26 +1872,43 @@ function InteractiveFabricationScene({
         return;
       }
 
+      // Advance along the trajectory, carrying any overflow into the following
+      // segment(s) within the same frame. Resetting progress without re-reading the
+      // waypoints is what made the torch flash back to the previous corner whenever
+      // the path changed direction.
+      const speedMetersPerSec = Math.max(0.12, (travelSpeed / 100) * 0.9);
+      let remaining = speedMetersPerSec * delta;
+      let reachedEnd = false;
+
+      while (remaining > 0) {
+        const idx = currentSegmentIndexRef.current;
+        if (idx >= weldNodes.length - 1) {
+          reachedEnd = true;
+          break;
+        }
+        const segLen = Math.max(0.01, weldNodes[idx].distanceTo(weldNodes[idx + 1]));
+        const remainingOnSegment = (1 - segmentProgressRef.current) * segLen;
+
+        if (remaining < remainingOnSegment) {
+          segmentProgressRef.current += remaining / segLen;
+          remaining = 0;
+        } else {
+          remaining -= remainingOnSegment;
+          segmentProgressRef.current = 0;
+          currentSegmentIndexRef.current += 1;
+          playServoJogSound(1.2);
+        }
+      }
+
+      const i = Math.min(currentSegmentIndexRef.current, weldNodes.length - 2);
       const pStart = weldNodes[i];
       const pEnd = weldNodes[i + 1];
       const segDistance = pStart.distanceTo(pEnd);
 
-      // Travel speed simulation
-      const speedMetersPerSec = Math.max(0.12, (travelSpeed / 100) * 0.9);
-      const stepProg = (speedMetersPerSec * delta) / Math.max(0.01, segDistance);
-
-      segmentProgressRef.current += stepProg;
-
-      if (segmentProgressRef.current >= 1.0) {
-        segmentProgressRef.current = 0;
-        currentSegmentIndexRef.current += 1;
-        playServoJogSound(1.2);
-      }
-
       const currentTorchWorldPos = new THREE.Vector3().lerpVectors(
         pStart,
         pEnd,
-        Math.min(1, segmentProgressRef.current)
+        reachedEnd ? 1 : Math.min(1, segmentProgressRef.current)
       );
 
       // Move torch directly
