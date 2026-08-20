@@ -66,12 +66,18 @@ export interface RoboDKWeldSettings {
   cold_lumpiness: number; // 0.0 - 1.0 how much the rope swells / pinches along its length
   cold_wander_mm: number; // 0 - 40 mm lateral meander amplitude of the worm
   cold_break_chance: number; // 0.0 - 1.0 chance the rope breaks into a non-continuous tube
+  cold_shape_flatness: number; // 0.0 (round rope) - 1.0 (flat, wide slumped rope)
+  cold_lump_frequency: number; // 0.2 - 4.0x how often the rope swells / pinches along its length
+  cold_wander_frequency: number; // 0.2 - 4.0x how often the rope snakes across the joint
 
   // Too-Hot Ugly Bead Controls (jagged overheated bead + smooth varying layer)
   hot_bead_scale: number; // 0.2 - 3.0x overall size of the over-heated bead
   hot_width_variation: number; // 0.0 - 1.0 width swell / pinch intensity
   hot_height_variation: number; // 0.0 - 1.0 crown height swell / pinch intensity
   hot_jag_intensity: number; // 0.0 - 1.0 sharpness of the jagged left / right toes
+  hot_jag_teeth: number; // 6 - 48 number of saw-teeth around the jagged shell (tooth shape)
+  hot_jag_height_ratio: number; // 0.1 - 1.0 jagged shell height relative to the bead crown
+  hot_jag_color: string; // hex colour of the jagged spikes (dark red by default)
   hot_mesh_blend: number; // 0.0 (smooth varying bead only) - 1.0 (jagged shell dominant)
   hot_crater_density: number; // 0.0 - 1.0 frequency of burn craters / undercut grooves
 }
@@ -138,12 +144,18 @@ export const ROBODK_DEFAULT_SETTINGS: RoboDKWeldSettings = {
   cold_lumpiness: 0.45,
   cold_wander_mm: 12.0,
   cold_break_chance: 0.12,
+  cold_shape_flatness: 0.35,
+  cold_lump_frequency: 1.0,
+  cold_wander_frequency: 1.0,
 
   // Too-hot ugly bead
   hot_bead_scale: 1.0,
   hot_width_variation: 0.55,
   hot_height_variation: 0.6,
   hot_jag_intensity: 0.5,
+  hot_jag_teeth: 16,
+  hot_jag_height_ratio: 0.6,
+  hot_jag_color: '#7f1d1d',
   hot_mesh_blend: 0.6,
   hot_crater_density: 0.16,
 };

@@ -1135,9 +1135,18 @@ function valueNoise(x: number): number {
 // of the bead when looking top-down — are pulled into sharp saw-teeth instead of a smooth
 // spherical shell. The tooth phase flips between the two ends of the segment so the spikes
 // zig-zag along the direction of travel.
-function createJaggedBeadGeometry(radialSegments = 32, intensity = 0.5): THREE.BufferGeometry {
+//
+// The saw-teeth only ever displace the cross-section sideways (local X = lateral toe of the
+// bead). The local Z axis carries the crown height, and is deliberately left untouched so the
+// jaggedness can never grow taller than the weld bead itself.
+function createJaggedBeadGeometry(
+  radialSegments = 32,
+  intensity = 0.5,
+  teeth = 16
+): THREE.BufferGeometry {
   const geo = new THREE.CylinderGeometry(1, 1, 1, radialSegments, 1, false);
   const pos = geo.attributes.position as THREE.BufferAttribute;
+  const toothCount = Math.max(2, Math.round(teeth));
 
   for (let v = 0; v < pos.count; v++) {
     const x = pos.getX(v);
@@ -1149,14 +1158,13 @@ function createJaggedBeadGeometry(radialSegments = 32, intensity = 0.5): THREE.B
     const theta = Math.atan2(z, x);
     // Concentrate the jaggedness on the ±X extremes (the sides of the bead).
     const sideWeight = Math.pow(Math.abs(Math.cos(theta)), 4);
-    const wedge = Math.floor(((theta + Math.PI) / (Math.PI * 2)) * radialSegments);
+    const wedge = Math.floor(((theta + Math.PI) / (Math.PI * 2)) * toothCount);
     const tooth = wedge % 2 === 0 ? 1 : -1;
     const phase = y >= 0 ? 1 : -1;
     const jag = 1 + sideWeight * tooth * phase * intensity;
 
     const scaled = Math.max(0.25, jag);
     pos.setX(v, x * scaled);
-    pos.setZ(v, z * scaled);
   }
 
   const flat = geo.toNonIndexed();
@@ -1203,6 +1211,9 @@ function WeldBeadsInstanced({
   const temperGoldColor = useMemo(() => new THREE.Color('#d97706'), []);
   const coldSlagColor = useMemo(() => new THREE.Color('#30343a'), []);
   const hotBurnCharcoal = useMemo(() => new THREE.Color('#18181b'), []);
+  // Colour of the jagged over-heated toes (dark red by default, tunable from the debug tool).
+  const hotJagColor = useMemo(() => new THREE.Color('#7f1d1d'), []);
+  const hotBeadColor = useMemo(() => new THREE.Color('#dc2626'), []);
 
   // Lay capsule flat along Z-axis (travel alignment)
   const capsuleAlignZQuat = useMemo(
@@ -1241,9 +1252,10 @@ function WeldBeadsInstanced({
   const jointGeo = useMemo(() => new THREE.SphereGeometry(1, 10, 8), []);
   // Normal-looking bead cross-section with sharp jagged left/right toes (overheated bead).
   const hotJagIntensity = THREE.MathUtils.clamp(weldSettings.hot_jag_intensity ?? 0.5, 0, 1);
+  const hotJagTeeth = THREE.MathUtils.clamp(Math.round(weldSettings.hot_jag_teeth ?? 16), 6, 48);
   const hotGeo = useMemo(
-    () => createJaggedBeadGeometry(32, hotJagIntensity),
-    [hotJagIntensity]
+    () => createJaggedBeadGeometry(32, hotJagIntensity, hotJagTeeth),
+    [hotJagIntensity, hotJagTeeth]
   );
   useEffect(() => () => hotGeo.dispose(), [hotGeo]);
   const craterGeo = useMemo(() => new THREE.CapsuleGeometry(1, 1, 8, 8), []);
@@ -1382,6 +1394,13 @@ function WeldBeadsInstanced({
     const coldLumpiness = THREE.MathUtils.clamp(weldSettings.cold_lumpiness ?? 0.45, 0, 1);
     const coldWander = Math.max(0, (weldSettings.cold_wander_mm ?? 12.0) * SPLATTER_MM_TO_WORLD);
     const coldBreakChance = THREE.MathUtils.clamp(weldSettings.cold_break_chance ?? 0.12, 0, 1);
+    // Shape of the cold rope cross-section: 0 = round rope, 1 = flat slumped ribbon.
+    const coldFlatness = THREE.MathUtils.clamp(weldSettings.cold_shape_flatness ?? 0.35, 0, 1);
+    const coldWidthShape = 1 + coldFlatness * 0.9;
+    const coldHeightShape = 1 - coldFlatness * 0.55;
+    // Frequency of the lumps and of the lateral meander along the continuous rope.
+    const coldLumpFreq = THREE.MathUtils.clamp(weldSettings.cold_lump_frequency ?? 1.0, 0.2, 4);
+    const coldWanderFreq = THREE.MathUtils.clamp(weldSettings.cold_wander_frequency ?? 1.0, 0.2, 4);
 
     // Debug-tunable too-hot ugly bead controls
     const hotScale = Math.max(0.05, weldSettings.hot_bead_scale ?? 1.0);
@@ -1393,12 +1412,26 @@ function WeldBeadsInstanced({
     );
     const hotMeshBlend = THREE.MathUtils.clamp(weldSettings.hot_mesh_blend ?? 0.6, 0, 1);
     const hotCraterDensity = THREE.MathUtils.clamp(weldSettings.hot_crater_density ?? 0.16, 0, 1);
+    // The jagged shell is always kept shorter than the smooth bead crown so the spikes read as
+    // ragged toes instead of towers standing above the weld.
+    const hotJagHeightRatio = THREE.MathUtils.clamp(
+      weldSettings.hot_jag_height_ratio ?? 0.6,
+      0.1,
+      1
+    );
+    hotJagColor.set(weldSettings.hot_jag_color || '#7f1d1d');
 
     // Tube-extrusion chain state: the previous path node and the bead index it came from, so
     // consecutive defect beads are stitched into one continuous extruded tube.
     let prevTubeIndex = -1;
     let prevTubeKind: 'cold' | 'hot' | null = null;
     let hasPrevNode = false;
+
+    // Lateral offset carried by the previous node of the current run. Wander is only allowed
+    // to change by a fraction of the travel step between two beads, which guarantees the
+    // extruded path always advances along the joint no matter which way the torch travels
+    // (axis-aligned, diagonal or around a corner).
+    let prevLateral = 0;
 
     // Minimum forward progress (world units) allowed between two path nodes. This is what
     // keeps the random extrusion path from ever walking backwards along the weld direction.
@@ -1473,35 +1506,51 @@ function WeldBeadsInstanced({
     // path keeps the extruded tube, the jagged toes and the lateral meander aligned with the
     // direction of travel even when the torch swings around a corner. Falls back to the bead
     // quaternion for isolated beads with no usable neighbours.
-    const resolveTravelFrame = (index: number, bead: InternalBead) => {
+    // Returns the cosine between this bead's travel direction and the previous one, so a
+    // sharp corner can break the extruded run instead of stretching a segment across it.
+    const resolveTravelFrame = (index: number, bead: InternalBead): number => {
       scratch.pathDir.set(0, 0, 0);
       const before = index > 0 ? beads[index - 1] : null;
       const after = index + 1 < totalCount ? beads[index + 1] : null;
 
-      if (before?.pos && after?.pos) {
-        scratch.pathDir.subVectors(after.pos, before.pos);
-      } else if (after?.pos) {
-        scratch.pathDir.subVectors(after.pos, bead.pos);
-      } else if (before?.pos) {
+      // The direction of the segment that is about to be extruded (previous bead -> this
+      // bead). Taking the real local step — instead of a centred difference across both
+      // neighbours — keeps the cross-section square to the joint on diagonal travel and at
+      // corners, where the centred average points off the actual path.
+      if (before?.pos) {
         scratch.pathDir.subVectors(bead.pos, before.pos);
       }
-      scratch.pathDir.y = 0;
-
-      if (scratch.pathDir.lengthSq() < 1e-10) {
-        scratch.pathDir.set(1, 0, 0).applyQuaternion(bead.quaternion);
-        scratch.pathDir.y = 0;
+      if (scratch.pathDir.lengthSq() < 1e-12 && after?.pos) {
+        scratch.pathDir.subVectors(after.pos, bead.pos);
       }
-      if (scratch.pathDir.lengthSq() < 1e-10) {
+
+      if (scratch.pathDir.lengthSq() < 1e-12) {
+        scratch.pathDir.set(1, 0, 0).applyQuaternion(bead.quaternion);
+      }
+      if (scratch.pathDir.lengthSq() < 1e-12) {
         scratch.pathDir.set(0, 0, 1);
       }
 
+      const hadPrevForward = scratch.prevForward.lengthSq() > 1e-10;
       scratch.forward.copy(scratch.pathDir).normalize();
+      const turnCos = hadPrevForward ? scratch.prevForward.dot(scratch.forward) : 1;
+      scratch.prevForward.copy(scratch.forward);
+
       // Right-hand lateral axis of the joint, always perpendicular to the live travel
       // direction so the bead cross-section rotates with the path.
       scratch.side.set(0, 1, 0).cross(scratch.forward);
+      if (scratch.side.lengthSq() < 1e-10) {
+        scratch.side.set(1, 0, 0).cross(scratch.forward);
+      }
       if (scratch.side.lengthSq() < 1e-10) scratch.side.set(1, 0, 0);
       scratch.side.normalize();
+
+      return turnCos;
     };
+
+    // The travel frame is rebuilt from scratch every frame so a stale direction from the
+    // previous frame can never leak into the first segment of a run.
+    scratch.prevForward.set(0, 0, 0);
 
     for (let i = 0; i < totalCount; i++) {
       const bead = beads[i];
@@ -1531,36 +1580,54 @@ function WeldBeadsInstanced({
       //    on itself. Cold metal doesn't wet the plate, so it piles into a stringy worm.
       // ------------------------------------------------------------------------------------
       if (beadArc === 'too_cold_stubbing') {
-        const ropeRadius = Math.max(sx, sz) * 0.34 * coldScale * coldWidthScale;
-        const ropeHeight = Math.max(sx, sz) * 0.34 * coldScale * coldHeightScale;
+        const ropeRadius = Math.max(sx, sz) * 0.34 * coldScale * coldWidthScale * coldWidthShape;
+        const ropeHeight = Math.max(sx, sz) * 0.34 * coldScale * coldHeightScale * coldHeightShape;
 
         // Slow, low-frequency swelling so the rope thickens and thins gradually along its
         // length (worm-like) rather than stepping between fat and thin chopped segments.
+        // `coldLumpFreq` sets how often those lumps repeat along the continuous bead.
         const nodulePulse =
           1 +
-          ((valueNoise(i * 0.11) - 0.5) * 1.1 + (valueNoise(i * 0.33 + 4.7) - 0.5) * 0.4) *
+          ((valueNoise(i * 0.11 * coldLumpFreq) - 0.5) * 1.1 +
+            (valueNoise(i * 0.33 * coldLumpFreq + 4.7) - 0.5) * 0.4) *
             coldLumpiness;
 
         // Travel frame taken from the deposited path so the worm follows direction changes.
-        resolveTravelFrame(i, bead);
-
-        // Two-octave meander: a long slow snake across the joint with a smaller secondary
-        // squirm on top of it, so the rope crawls like a worm instead of a straight chain.
-        const lateral =
-          (valueNoise(i * 0.045) - 0.5) * 2 * coldWander +
-          (valueNoise(i * 0.17 + 23.9) - 0.5) * 2 * coldWander * 0.3;
-        const lift =
-          valueNoise(i * 0.07 + 17.3) * ropeHeight * 0.85 +
-          (valueNoise(i * 0.26 + 61.1) - 0.5) * ropeHeight * 0.3;
-
-        scratch.node.copy(bead.pos);
-        scratch.node.addScaledVector(scratch.side, lateral);
-        scratch.node.y = WORKPIECE_TOP_Y + ropeHeight * nodulePulse * 0.9 + lift;
+        const turnCos = resolveTravelFrame(i, bead);
 
         // Cold metal stubs out: the rope randomly breaks into disconnected lengths.
         const broken = coldBreakChance > 0 && hashRandom(i * 2.113 + 6.7) < coldBreakChance;
 
-        const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'cold' && !broken;
+        // A hard direction change (corner) always starts a new run instead of dragging a
+        // segment across the turn.
+        const contiguous =
+          prevTubeIndex === i - 1 && prevTubeKind === 'cold' && !broken && turnCos > 0.25;
+
+        // Two-octave meander: a long slow snake across the joint with a smaller secondary
+        // squirm on top of it, so the rope crawls like a worm instead of a straight chain.
+        const lateralTarget =
+          (valueNoise(i * 0.045 * coldWanderFreq) - 0.5) * 2 * coldWander +
+          (valueNoise(i * 0.17 * coldWanderFreq + 23.9) - 0.5) * 2 * coldWander * 0.3;
+        // Limit how fast the meander can move sideways relative to the forward step so the
+        // extruded path always advances along the joint, whatever direction it travels in.
+        const lateral = contiguous
+          ? THREE.MathUtils.clamp(
+              lateralTarget,
+              prevLateral - beadGap * 0.6,
+              prevLateral + beadGap * 0.6
+            )
+          : lateralTarget;
+        prevLateral = lateral;
+
+        const lift =
+          valueNoise(i * 0.07 * coldLumpFreq + 17.3) * ropeHeight * 0.85 +
+          (valueNoise(i * 0.26 * coldLumpFreq + 61.1) - 0.5) * ropeHeight * 0.3;
+
+        scratch.node.copy(bead.pos);
+        scratch.node.addScaledVector(scratch.side, lateral);
+        scratch.node.y =
+          Math.max(bead.pos.y, WORKPIECE_TOP_Y) + ropeHeight * nodulePulse * 0.9 + lift;
+
         const segmentRadius = Math.max(1e-5, ropeRadius * nodulePulse);
         const segmentHeight = Math.max(1e-5, ropeHeight * nodulePulse);
         const maxSegLength = Math.max(ropeRadius * 3.0, beadGap * 2.5);
@@ -1615,9 +1682,23 @@ function WeldBeadsInstanced({
 
         // Travel frame taken from the deposited path so the jagged toes and the bead
         // cross-section stay square to the joint when the torch turns a corner.
-        resolveTravelFrame(i, bead);
+        const turnCos = resolveTravelFrame(i, bead);
 
-        const lateral = (valueNoise(i * 0.28 + 31.7) - 0.5) * 2 * baseRadius * 0.35;
+        // A hard direction change (corner) always starts a new run instead of dragging a
+        // segment across the turn.
+        const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'hot' && turnCos > 0.25;
+
+        const lateralTarget = (valueNoise(i * 0.28 + 31.7) - 0.5) * 2 * baseRadius * 0.35;
+        // Rate-limited sideways drift keeps the extrusion advancing along the joint for any
+        // travel direction (axis-aligned, diagonal or turning).
+        const lateral = contiguous
+          ? THREE.MathUtils.clamp(
+              lateralTarget,
+              prevLateral - beadGap * 0.6,
+              prevLateral + beadGap * 0.6
+            )
+          : lateralTarget;
+        prevLateral = lateral;
 
         // Undercutting: the toes of the bead are burned away, so the bead sinks into the
         // base metal instead of sitting proud on top of it.
@@ -1625,15 +1706,19 @@ function WeldBeadsInstanced({
 
         scratch.node.copy(bead.pos);
         scratch.node.addScaledVector(scratch.side, lateral);
-        scratch.node.y = WORKPIECE_TOP_Y + segmentHeight * 0.45 - segmentHeight * undercut * 0.5;
+        scratch.node.y =
+          Math.max(bead.pos.y, WORKPIECE_TOP_Y) +
+          segmentHeight * 0.45 -
+          segmentHeight * undercut * 0.5;
 
-        const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'hot';
         const maxSegLength = Math.max(baseRadius * 3.0, beadGap * 2.5);
         // The jagged shell is emitted at the blended outer size; the smooth "normal bead"
         // layer sits just inside it so the two meshes read as one welded-together bead.
         const shellRadius = segmentRadius * (0.86 + 0.44 * hotMeshBlend);
-        const shellHeight = segmentHeight * (0.86 + 0.44 * hotMeshBlend);
         const coreScale = 1 - 0.22 * hotMeshBlend;
+        // The jagged shell is kept below the smooth crown so the spikes ripple out of the
+        // sides of the bead rather than towering above it.
+        const shellHeight = segmentHeight * coreScale * hotJagHeightRatio;
         if (
           buildTubeSegment(
             contiguous,
@@ -1649,7 +1734,7 @@ function WeldBeadsInstanced({
 
           if (hotMeshBlend > 0.02 && hotCount < TUBE_INSTANCE_CAP) {
             hotMeshRef.current.setMatrixAt(hotCount, dummy.matrix);
-            tempColor.set('#dc2626');
+            tempColor.copy(hotJagColor);
             hotMeshRef.current.setColorAt(hotCount, tempColor);
             hotCount++;
           }
@@ -1660,7 +1745,7 @@ function WeldBeadsInstanced({
             dummy.scale.set(segmentRadius * coreScale, segLengthScale, segmentHeight * coreScale);
             dummy.updateMatrix();
             tubeMeshRef.current.setMatrixAt(tubeCount, dummy.matrix);
-            tempColor.set('#dc2626');
+            tempColor.copy(hotBeadColor);
             tubeMeshRef.current.setColorAt(tubeCount, tempColor);
             tubeCount++;
           }
@@ -1676,7 +1761,7 @@ function WeldBeadsInstanced({
             );
             dummy.updateMatrix();
             jointMeshRef.current.setMatrixAt(jointCount, dummy.matrix);
-            tempColor.set('#dc2626');
+            tempColor.copy(hotBeadColor);
             jointMeshRef.current.setColorAt(jointCount, tempColor);
             jointCount++;
           }
@@ -1760,6 +1845,8 @@ function WeldBeadsInstanced({
         prevTubeIndex = -1;
         prevTubeKind = null;
         hasPrevNode = false;
+        prevLateral = 0;
+        scratch.prevForward.set(0, 0, 0);
 
         dummy.position.copy(bead.pos);
         dummy.quaternion.copy(bead.quaternion);

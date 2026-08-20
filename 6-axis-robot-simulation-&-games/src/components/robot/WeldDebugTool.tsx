@@ -26,6 +26,7 @@ import WeldDial from './WeldDial';
 import WeldCalibrationTool from './WeldCalibrationTool';
 import { useDebugSettings } from '../../hooks/useDebugSettings';
 import { WireProfile } from './weldProfiles';
+import NumericInput from './NumericInput';
 
 interface WeldDebugToolProps {
   settings: RoboDKWeldSettings;
@@ -1371,13 +1372,51 @@ export function WeldDebugTool({
                 step: 0.02,
                 format: (v: number) => `${(v * 100).toFixed(0)}%`,
               },
+              {
+                key: 'cold_shape_flatness' as const,
+                label: 'Rope Shape (round ↔ flat)',
+                value: settings.cold_shape_flatness ?? 0.35,
+                min: 0,
+                max: 1,
+                step: 0.05,
+                format: (v: number) => `${(v * 100).toFixed(0)}% flat`,
+              },
+              {
+                key: 'cold_lump_frequency' as const,
+                label: 'Lump Frequency (along bead)',
+                value: settings.cold_lump_frequency ?? 1.0,
+                min: 0.2,
+                max: 4,
+                step: 0.05,
+                format: (v: number) => `${v.toFixed(2)}x`,
+              },
+              {
+                key: 'cold_wander_frequency' as const,
+                label: 'Wander Frequency',
+                value: settings.cold_wander_frequency ?? 1.0,
+                min: 0.2,
+                max: 4,
+                step: 0.05,
+                format: (v: number) => `${v.toFixed(2)}x`,
+              },
             ].map((ctl) => (
               <div key={ctl.key} className="space-y-1">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-1.5">
                   <span className="text-slate-300 text-[11px]">{ctl.label}:</span>
-                  <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold text-[11px] border border-sky-500/40">
-                    {ctl.format(ctl.value)}
-                  </span>
+                  <div className="flex items-center gap-1">
+                    <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold text-[11px] border border-sky-500/40">
+                      {ctl.format(ctl.value)}
+                    </span>
+                    <NumericInput
+                      value={ctl.value}
+                      min={ctl.min}
+                      max={ctl.max}
+                      step={ctl.step}
+                      onCommit={(val) => updateParam(ctl.key, val)}
+                      title="Type an exact value (Enter to apply)"
+                      className="w-12 bg-slate-900 px-1 py-0.5 rounded border border-slate-700 text-sky-200 font-bold text-center text-[10px] focus:outline-none focus:border-sky-400"
+                    />
+                  </div>
                 </div>
                 <input
                   type="range"
@@ -1393,9 +1432,9 @@ export function WeldDebugTool({
 
             <div className="grid grid-cols-3 gap-1 pt-0.5">
               {[
-                { label: 'Thin', scale: 0.7, lump: 0.25, wander: 6, brk: 0.05 },
-                { label: 'Default', scale: 1.0, lump: 0.45, wander: 12, brk: 0.12 },
-                { label: 'Ropey', scale: 1.5, lump: 0.85, wander: 24, brk: 0.3 },
+                { label: 'Thin', scale: 0.7, lump: 0.25, wander: 6, brk: 0.05, flat: 0.15, freq: 0.6 },
+                { label: 'Default', scale: 1.0, lump: 0.45, wander: 12, brk: 0.12, flat: 0.35, freq: 1.0 },
+                { label: 'Ropey', scale: 1.5, lump: 0.85, wander: 24, brk: 0.3, flat: 0.7, freq: 1.8 },
               ].map((p) => (
                 <button
                   key={p.label}
@@ -1407,6 +1446,9 @@ export function WeldDebugTool({
                       cold_lumpiness: p.lump,
                       cold_wander_mm: p.wander,
                       cold_break_chance: p.brk,
+                      cold_shape_flatness: p.flat,
+                      cold_lump_frequency: p.freq,
+                      cold_wander_frequency: p.freq,
                     })
                   }
                   className="py-1 rounded text-[10px] font-bold border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
@@ -1486,13 +1528,42 @@ export function WeldDebugTool({
                 step: 0.02,
                 format: (v: number) => `${(v * 100).toFixed(0)}%`,
               },
+              {
+                key: 'hot_jag_teeth' as const,
+                label: 'Jagged Tooth Count (shape)',
+                value: settings.hot_jag_teeth ?? 16,
+                min: 6,
+                max: 48,
+                step: 1,
+                format: (v: number) => `${v.toFixed(0)} teeth`,
+              },
+              {
+                key: 'hot_jag_height_ratio' as const,
+                label: 'Jagged Height (vs bead crown)',
+                value: settings.hot_jag_height_ratio ?? 0.6,
+                min: 0.1,
+                max: 1,
+                step: 0.05,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
             ].map((ctl) => (
               <div key={ctl.key} className="space-y-1">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-1.5">
                   <span className="text-slate-300 text-[11px]">{ctl.label}:</span>
-                  <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 font-bold text-[11px] border border-orange-500/40">
-                    {ctl.format(ctl.value)}
-                  </span>
+                  <div className="flex items-center gap-1">
+                    <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 font-bold text-[11px] border border-orange-500/40">
+                      {ctl.format(ctl.value)}
+                    </span>
+                    <NumericInput
+                      value={ctl.value}
+                      min={ctl.min}
+                      max={ctl.max}
+                      step={ctl.step}
+                      onCommit={(val) => updateParam(ctl.key, val)}
+                      title="Type an exact value (Enter to apply)"
+                      className="w-12 bg-slate-900 px-1 py-0.5 rounded border border-slate-700 text-orange-200 font-bold text-center text-[10px] focus:outline-none focus:border-orange-400"
+                    />
+                  </div>
                 </div>
                 <input
                   type="range"
@@ -1506,11 +1577,52 @@ export function WeldDebugTool({
               </div>
             ))}
 
+            {/* Jagged spike colour (dark red by default) */}
+            <div className="space-y-1 pt-0.5 border-t border-slate-800/80">
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-slate-300 text-[11px]">Jagged Spike Colour:</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="color"
+                    value={settings.hot_jag_color ?? '#7f1d1d'}
+                    onChange={(e) => updateParam('hot_jag_color', e.target.value)}
+                    className="w-7 h-6 bg-transparent border border-slate-700 rounded cursor-pointer"
+                    title="Colour of the jagged over-heated toes"
+                  />
+                  <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 font-bold text-[10px] border border-orange-500/40 uppercase">
+                    {settings.hot_jag_color ?? '#7f1d1d'}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {[
+                  { hex: '#7f1d1d', name: 'Dark Red' },
+                  { hex: '#5b0f0f', name: 'Oxide Maroon' },
+                  { hex: '#991b1b', name: 'Burnt Crimson' },
+                  { hex: '#450a0a', name: 'Scorched Blood' },
+                ].map((c) => (
+                  <button
+                    key={c.hex}
+                    type="button"
+                    onClick={() => updateParam('hot_jag_color', c.hex)}
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold border transition-all cursor-pointer ${
+                      (settings.hot_jag_color ?? '#7f1d1d').toLowerCase() === c.hex
+                        ? 'border-orange-400 text-orange-200'
+                        : 'border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                    style={{ backgroundColor: `${c.hex}55` }}
+                  >
+                    {c.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="grid grid-cols-3 gap-1 pt-0.5">
               {[
-                { label: 'Subtle', scale: 0.85, width: 0.25, height: 0.3, jag: 0.2, blend: 0.25 },
-                { label: 'Default', scale: 1.0, width: 0.55, height: 0.6, jag: 0.5, blend: 0.6 },
-                { label: 'Wrecked', scale: 1.35, width: 0.9, height: 0.95, jag: 0.9, blend: 1.0 },
+                { label: 'Subtle', scale: 0.85, width: 0.25, height: 0.3, jag: 0.2, blend: 0.25, teeth: 12, jagH: 0.45 },
+                { label: 'Default', scale: 1.0, width: 0.55, height: 0.6, jag: 0.5, blend: 0.6, teeth: 16, jagH: 0.6 },
+                { label: 'Wrecked', scale: 1.35, width: 0.9, height: 0.95, jag: 0.9, blend: 1.0, teeth: 28, jagH: 0.85 },
               ].map((p) => (
                 <button
                   key={p.label}
@@ -1523,6 +1635,8 @@ export function WeldDebugTool({
                       hot_height_variation: p.height,
                       hot_jag_intensity: p.jag,
                       hot_mesh_blend: p.blend,
+                      hot_jag_teeth: p.teeth,
+                      hot_jag_height_ratio: p.jagH,
                     })
                   }
                   className="py-1 rounded text-[10px] font-bold border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"

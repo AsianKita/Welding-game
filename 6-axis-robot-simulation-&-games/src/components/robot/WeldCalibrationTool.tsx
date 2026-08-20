@@ -38,6 +38,7 @@ import {
   GEOMETRY_CURVE_MAX_WIDTH,
 } from './weldProfiles';
 import { useDebugSettings } from '../../hooks/useDebugSettings';
+import NumericInput from './NumericInput';
 
 interface WeldCalibrationToolProps {
   currentVolt: number;
@@ -801,25 +802,23 @@ export default function WeldCalibrationTool({
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-emerald-400">Tolerance Band (±%)</span>
-              <input
-                type="number"
-                step="1"
+              <NumericInput
+                step={1}
                 min={1}
                 max={100}
                 value={curve.tolerancePct}
-                onChange={(e) => applyCurve({ tolerancePct: parseFloat(e.target.value) })}
+                onCommit={(val) => applyCurve({ tolerancePct: val })}
                 className="bg-slate-900 px-2 py-1 rounded border border-emerald-500/50 text-emerald-300 font-bold text-center focus:outline-none focus:border-emerald-400"
               />
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-rose-400">Hard Fail Band (±%)</span>
-              <input
-                type="number"
-                step="1"
+              <NumericInput
+                step={1}
                 min={2}
                 max={300}
                 value={curve.hardFailPct}
-                onChange={(e) => applyCurve({ hardFailPct: parseFloat(e.target.value) })}
+                onCommit={(val) => applyCurve({ hardFailPct: val })}
                 className="bg-slate-900 px-2 py-1 rounded border border-rose-500/50 text-rose-300 font-bold text-center focus:outline-none focus:border-rose-400"
               />
             </div>
@@ -832,25 +831,23 @@ export default function WeldCalibrationTool({
                 <span className="text-slate-500 font-bold text-center">{idx + 1}</span>
                 <div className="flex items-center gap-1">
                   <span className="text-slate-400 w-[38px]">Speed</span>
-                  <input
-                    type="number"
-                    step="1"
+                  <NumericInput
+                    step={1}
                     min={GEOMETRY_CURVE_MIN_SPEED}
                     max={GEOMETRY_CURVE_MAX_SPEED}
                     value={pt.speed}
-                    onChange={(e) => handleCurvePointChange(idx, 'speed', parseFloat(e.target.value))}
+                    onCommit={(val) => handleCurvePointChange(idx, 'speed', val)}
                     className="w-full bg-slate-900 px-1.5 py-0.5 rounded border border-slate-700 text-slate-200 font-bold text-center focus:outline-none focus:border-cyan-400"
                   />
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-slate-400 w-[38px]">Width</span>
-                  <input
-                    type="number"
-                    step="0.1"
+                  <NumericInput
+                    step={0.1}
                     min={0.1}
                     max={GEOMETRY_CURVE_MAX_WIDTH}
                     value={pt.width}
-                    onChange={(e) => handleCurvePointChange(idx, 'width', parseFloat(e.target.value))}
+                    onCommit={(val) => handleCurvePointChange(idx, 'width', val)}
                     className="w-full bg-slate-900 px-1.5 py-0.5 rounded border border-slate-700 text-yellow-300 font-bold text-center focus:outline-none focus:border-amber-400"
                   />
                 </div>
@@ -889,28 +886,25 @@ export default function WeldCalibrationTool({
           <span className="text-cyan-300 font-bold text-[11px]">WFS Spec (IPM):</span>
           <div className="flex flex-col gap-0.5">
             <span className="text-[9px] text-slate-400">Min</span>
-            <input
-              type="number"
+            <NumericInput
               value={activeProfile.wfs.min}
-              onChange={(e) => handleSpecChange('wfs', 'min', parseFloat(e.target.value))}
+              onCommit={(val) => handleSpecChange('wfs', 'min', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-cyan-300 font-bold text-center text-xs focus:outline-none focus:border-cyan-400"
             />
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-[9px] text-emerald-400 font-bold">Optimal</span>
-            <input
-              type="number"
+            <NumericInput
               value={activeProfile.wfs.opt}
-              onChange={(e) => handleSpecChange('wfs', 'opt', parseFloat(e.target.value))}
+              onCommit={(val) => handleSpecChange('wfs', 'opt', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-emerald-500/60 text-emerald-300 font-bold text-center text-xs focus:outline-none focus:border-emerald-400"
             />
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-[9px] text-slate-400">Max</span>
-            <input
-              type="number"
+            <NumericInput
               value={activeProfile.wfs.max}
-              onChange={(e) => handleSpecChange('wfs', 'max', parseFloat(e.target.value))}
+              onCommit={(val) => handleSpecChange('wfs', 'max', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-cyan-300 font-bold text-center text-xs focus:outline-none focus:border-cyan-400"
             />
           </div>
@@ -921,31 +915,28 @@ export default function WeldCalibrationTool({
           <span className="text-yellow-300 font-bold text-[11px]">Volts Spec (V):</span>
           <div className="flex flex-col gap-0.5">
             <span className="text-[9px] text-slate-400">Min</span>
-            <input
-              type="number"
-              step="0.5"
+            <NumericInput
+              step={0.5}
               value={activeProfile.volts.min}
-              onChange={(e) => handleSpecChange('volts', 'min', parseFloat(e.target.value))}
+              onCommit={(val) => handleSpecChange('volts', 'min', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-yellow-300 font-bold text-center text-xs focus:outline-none focus:border-yellow-400"
             />
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-[9px] text-emerald-400 font-bold">Optimal</span>
-            <input
-              type="number"
-              step="0.5"
+            <NumericInput
+              step={0.5}
               value={activeProfile.volts.opt}
-              onChange={(e) => handleSpecChange('volts', 'opt', parseFloat(e.target.value))}
+              onCommit={(val) => handleSpecChange('volts', 'opt', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-emerald-500/60 text-emerald-300 font-bold text-center text-xs focus:outline-none focus:border-emerald-400"
             />
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-[9px] text-slate-400">Max</span>
-            <input
-              type="number"
-              step="0.5"
+            <NumericInput
+              step={0.5}
               value={activeProfile.volts.max}
-              onChange={(e) => handleSpecChange('volts', 'max', parseFloat(e.target.value))}
+              onCommit={(val) => handleSpecChange('volts', 'max', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-yellow-300 font-bold text-center text-xs focus:outline-none focus:border-yellow-400"
             />
           </div>
@@ -955,40 +946,36 @@ export default function WeldCalibrationTool({
         <div className="grid grid-cols-4 gap-2 pt-1 border-t border-slate-800/80 text-[10px]">
           <div className="flex flex-col gap-0.5">
             <span className="text-slate-400">Diameter (in):</span>
-            <input
-              type="number"
-              step="0.005"
+            <NumericInput
+              step={0.005}
               value={activeProfile.diameter}
-              onChange={(e) => handleFieldChange('diameter', parseFloat(e.target.value))}
+              onCommit={(val) => handleFieldChange('diameter', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-slate-200 font-bold text-center focus:outline-none focus:border-amber-400"
             />
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-slate-400">Base Speed:</span>
-            <input
-              type="number"
+            <NumericInput
               value={activeProfile.baseSpeed}
-              onChange={(e) => handleFieldChange('baseSpeed', parseFloat(e.target.value))}
+              onCommit={(val) => handleFieldChange('baseSpeed', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-slate-200 font-bold text-center focus:outline-none focus:border-amber-400"
             />
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-slate-400">Target W (mm):</span>
-            <input
-              type="number"
-              step="0.1"
+            <NumericInput
+              step={0.1}
               value={activeProfile.targetWidth}
-              onChange={(e) => handleFieldChange('targetWidth', parseFloat(e.target.value))}
+              onCommit={(val) => handleFieldChange('targetWidth', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-yellow-300 font-bold text-center focus:outline-none focus:border-amber-400"
             />
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-slate-400">Target H (mm):</span>
-            <input
-              type="number"
-              step="0.1"
+            <NumericInput
+              step={0.1}
               value={activeProfile.targetHeight}
-              onChange={(e) => handleFieldChange('targetHeight', parseFloat(e.target.value))}
+              onCommit={(val) => handleFieldChange('targetHeight', val)}
               className="bg-slate-900 px-2 py-1 rounded border border-slate-700 text-cyan-300 font-bold text-center focus:outline-none focus:border-amber-400"
             />
           </div>
