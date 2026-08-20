@@ -18,6 +18,7 @@ import {
   Save,
   RefreshCw,
   Compass,
+  Snowflake,
   X,
 } from 'lucide-react';
 import { RoboDKWeldSettings } from './weldManagerTypes';
@@ -73,7 +74,7 @@ export function WeldDebugTool({
   const { saveAllSettings, loadAllSettings, clearAllSettings } = useDebugSettings();
 
   const [isOpen, setIsOpen] = useState(true);
-  const [activeTab, setActiveTab] = useState<'scale' | 'color' | 'thermal' | 'calib' | 'style' | 'splat' | 'layout'>('thermal');
+  const [activeTab, setActiveTab] = useState<'scale' | 'color' | 'thermal' | 'calib' | 'style' | 'splat' | 'cold' | 'hot' | 'layout'>('thermal');
   const [windowWidth, setWindowWidth] = useState<number>(360); // 270 to 480 px
   const [windowOpacity, setWindowOpacity] = useState<number>(95);
   const [useDialMode, setUseDialMode] = useState<boolean>(true);
@@ -394,6 +395,32 @@ export function WeldDebugTool({
           >
             <Zap size={11} />
             <span>Splat</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('cold')}
+            className={`py-1 px-2 rounded-lg font-bold text-[10px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
+              activeTab === 'cold'
+                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+            }`}
+            title="Too-cold stringy worm size, lumpiness, wander and breaks"
+          >
+            <Snowflake size={11} />
+            <span>Cold</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('hot')}
+            className={`py-1 px-2 rounded-lg font-bold text-[10px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
+              activeTab === 'hot'
+                ? 'bg-orange-500/20 text-orange-300 border border-orange-500/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+            }`}
+            title="Too-hot ugly bead variation, jagged edges and mesh blend"
+          >
+            <Flame size={11} />
+            <span>Hot</span>
           </button>
 
           {!isEmbedded && (
@@ -1266,6 +1293,236 @@ export function WeldDebugTool({
                       splatter_count: p.count,
                       splatter_density: p.density,
                       splatter_size_mm: p.size,
+                    })
+                  }
+                  className="py-1 rounded text-[10px] font-bold border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TOO-COLD WORM TAB */}
+        {activeTab === 'cold' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-1.5 text-sky-300 font-bold">
+              <Snowflake size={13} className="text-sky-400" />
+              <span className="text-xs">Too Cold — Stringy Worm</span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-snug">
+              Cold metal does not wet the plate, so it piles up into a wandering rope. Dial in
+              the rope size, how much it swells, how far it snakes and how often it breaks.
+            </p>
+
+            {[
+              {
+                key: 'cold_rope_scale' as const,
+                label: 'Rope Size (overall)',
+                value: settings.cold_rope_scale ?? 1.0,
+                min: 0.2,
+                max: 3,
+                step: 0.05,
+                format: (v: number) => `${v.toFixed(2)}x`,
+              },
+              {
+                key: 'cold_width_scale' as const,
+                label: 'Rope Width',
+                value: settings.cold_width_scale ?? 1.0,
+                min: 0.2,
+                max: 3,
+                step: 0.05,
+                format: (v: number) => `${v.toFixed(2)}x`,
+              },
+              {
+                key: 'cold_height_scale' as const,
+                label: 'Rope Height (crown)',
+                value: settings.cold_height_scale ?? 1.0,
+                min: 0.2,
+                max: 3,
+                step: 0.05,
+                format: (v: number) => `${v.toFixed(2)}x`,
+              },
+              {
+                key: 'cold_lumpiness' as const,
+                label: 'Volume Lumpiness',
+                value: settings.cold_lumpiness ?? 0.45,
+                min: 0,
+                max: 1,
+                step: 0.05,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+              {
+                key: 'cold_wander_mm' as const,
+                label: 'Worm Wander',
+                value: settings.cold_wander_mm ?? 12.0,
+                min: 0,
+                max: 40,
+                step: 0.5,
+                format: (v: number) => `${v.toFixed(1)} mm`,
+              },
+              {
+                key: 'cold_break_chance' as const,
+                label: 'Break Randomness (stub-outs)',
+                value: settings.cold_break_chance ?? 0.12,
+                min: 0,
+                max: 1,
+                step: 0.02,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+            ].map((ctl) => (
+              <div key={ctl.key} className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300 text-[11px]">{ctl.label}:</span>
+                  <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold text-[11px] border border-sky-500/40">
+                    {ctl.format(ctl.value)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={ctl.min}
+                  max={ctl.max}
+                  step={ctl.step}
+                  value={ctl.value}
+                  onChange={(e) => updateParam(ctl.key, parseFloat(e.target.value))}
+                  className="w-full accent-sky-500 cursor-pointer"
+                />
+              </div>
+            ))}
+
+            <div className="grid grid-cols-3 gap-1 pt-0.5">
+              {[
+                { label: 'Thin', scale: 0.7, lump: 0.25, wander: 6, brk: 0.05 },
+                { label: 'Default', scale: 1.0, lump: 0.45, wander: 12, brk: 0.12 },
+                { label: 'Ropey', scale: 1.5, lump: 0.85, wander: 24, brk: 0.3 },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() =>
+                    onUpdateSettings({
+                      ...settings,
+                      cold_rope_scale: p.scale,
+                      cold_lumpiness: p.lump,
+                      cold_wander_mm: p.wander,
+                      cold_break_chance: p.brk,
+                    })
+                  }
+                  className="py-1 rounded text-[10px] font-bold border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TOO-HOT UGLY BEAD TAB */}
+        {activeTab === 'hot' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-1.5 text-orange-300 font-bold">
+              <Flame size={13} className="text-orange-400" />
+              <span className="text-xs">Too Hot — Ugly Bead</span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-snug">
+              An over-heated bead keeps a normal profile but swells and pinches, burns craters
+              and grows sharp jagged toes. Blend controls how much of the jagged shell shows
+              over the smooth varying bead layer. Splatter is tuned in the Splat tab.
+            </p>
+
+            {[
+              {
+                key: 'hot_bead_scale' as const,
+                label: 'Bead Size (overall)',
+                value: settings.hot_bead_scale ?? 1.0,
+                min: 0.2,
+                max: 3,
+                step: 0.05,
+                format: (v: number) => `${v.toFixed(2)}x`,
+              },
+              {
+                key: 'hot_width_variation' as const,
+                label: 'Width Variation',
+                value: settings.hot_width_variation ?? 0.55,
+                min: 0,
+                max: 1,
+                step: 0.05,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+              {
+                key: 'hot_height_variation' as const,
+                label: 'Height Variation',
+                value: settings.hot_height_variation ?? 0.6,
+                min: 0,
+                max: 1,
+                step: 0.05,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+              {
+                key: 'hot_jag_intensity' as const,
+                label: 'Jagged Edge Sharpness',
+                value: settings.hot_jag_intensity ?? 0.5,
+                min: 0,
+                max: 1,
+                step: 0.05,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+              {
+                key: 'hot_mesh_blend' as const,
+                label: 'Mesh Blend (smooth ↔ jagged)',
+                value: settings.hot_mesh_blend ?? 0.6,
+                min: 0,
+                max: 1,
+                step: 0.05,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+              {
+                key: 'hot_crater_density' as const,
+                label: 'Crater / Undercut Density',
+                value: settings.hot_crater_density ?? 0.16,
+                min: 0,
+                max: 1,
+                step: 0.02,
+                format: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+            ].map((ctl) => (
+              <div key={ctl.key} className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300 text-[11px]">{ctl.label}:</span>
+                  <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 font-bold text-[11px] border border-orange-500/40">
+                    {ctl.format(ctl.value)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={ctl.min}
+                  max={ctl.max}
+                  step={ctl.step}
+                  value={ctl.value}
+                  onChange={(e) => updateParam(ctl.key, parseFloat(e.target.value))}
+                  className="w-full accent-orange-500 cursor-pointer"
+                />
+              </div>
+            ))}
+
+            <div className="grid grid-cols-3 gap-1 pt-0.5">
+              {[
+                { label: 'Subtle', scale: 0.85, width: 0.25, height: 0.3, jag: 0.2, blend: 0.25 },
+                { label: 'Default', scale: 1.0, width: 0.55, height: 0.6, jag: 0.5, blend: 0.6 },
+                { label: 'Wrecked', scale: 1.35, width: 0.9, height: 0.95, jag: 0.9, blend: 1.0 },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() =>
+                    onUpdateSettings({
+                      ...settings,
+                      hot_bead_scale: p.scale,
+                      hot_width_variation: p.width,
+                      hot_height_variation: p.height,
+                      hot_jag_intensity: p.jag,
+                      hot_mesh_blend: p.blend,
                     })
                   }
                   className="py-1 rounded text-[10px] font-bold border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"

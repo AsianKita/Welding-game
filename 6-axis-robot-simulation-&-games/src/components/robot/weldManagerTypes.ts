@@ -58,6 +58,22 @@ export interface RoboDKWeldSettings {
   splatter_density: number; // 0.0 - 1.0 fraction of beads that emit a splatter burst
   splatter_size_mm: number; // 0.5 - 20 mm nominal droplet diameter
   splatter_size_variance: number; // 0.0 - 1.0 random size spread around the nominal size
+
+  // Too-Cold Worm Controls (stringy, non-wetting cold rope)
+  cold_rope_scale: number; // 0.2 - 3.0x overall size of the cold rope
+  cold_width_scale: number; // 0.2 - 3.0x rope width (cross-section)
+  cold_height_scale: number; // 0.2 - 3.0x rope crown height
+  cold_lumpiness: number; // 0.0 - 1.0 how much the rope swells / pinches along its length
+  cold_wander_mm: number; // 0 - 40 mm lateral meander amplitude of the worm
+  cold_break_chance: number; // 0.0 - 1.0 chance the rope breaks into a non-continuous tube
+
+  // Too-Hot Ugly Bead Controls (jagged overheated bead + smooth varying layer)
+  hot_bead_scale: number; // 0.2 - 3.0x overall size of the over-heated bead
+  hot_width_variation: number; // 0.0 - 1.0 width swell / pinch intensity
+  hot_height_variation: number; // 0.0 - 1.0 crown height swell / pinch intensity
+  hot_jag_intensity: number; // 0.0 - 1.0 sharpness of the jagged left / right toes
+  hot_mesh_blend: number; // 0.0 (smooth varying bead only) - 1.0 (jagged shell dominant)
+  hot_crater_density: number; // 0.0 - 1.0 frequency of burn craters / undercut grooves
 }
 
 export const ROBODK_DEFAULT_SETTINGS: RoboDKWeldSettings = {
@@ -114,6 +130,22 @@ export const ROBODK_DEFAULT_SETTINGS: RoboDKWeldSettings = {
   splatter_density: 0.85,
   splatter_size_mm: 9.0,
   splatter_size_variance: 0.6,
+
+  // Too-cold worm
+  cold_rope_scale: 1.0,
+  cold_width_scale: 1.0,
+  cold_height_scale: 1.0,
+  cold_lumpiness: 0.45,
+  cold_wander_mm: 12.0,
+  cold_break_chance: 0.12,
+
+  // Too-hot ugly bead
+  hot_bead_scale: 1.0,
+  hot_width_variation: 0.55,
+  hot_height_variation: 0.6,
+  hot_jag_intensity: 0.5,
+  hot_mesh_blend: 0.6,
+  hot_crater_density: 0.16,
 };
 
 export interface WeldPreset {

@@ -1135,7 +1135,7 @@ function valueNoise(x: number): number {
 // of the bead when looking top-down — are pulled into sharp saw-teeth instead of a smooth
 // spherical shell. The tooth phase flips between the two ends of the segment so the spikes
 // zig-zag along the direction of travel.
-function createJaggedBeadGeometry(radialSegments = 32): THREE.BufferGeometry {
+function createJaggedBeadGeometry(radialSegments = 32, intensity = 0.5): THREE.BufferGeometry {
   const geo = new THREE.CylinderGeometry(1, 1, 1, radialSegments, 1, false);
   const pos = geo.attributes.position as THREE.BufferAttribute;
 
@@ -1152,7 +1152,7 @@ function createJaggedBeadGeometry(radialSegments = 32): THREE.BufferGeometry {
     const wedge = Math.floor(((theta + Math.PI) / (Math.PI * 2)) * radialSegments);
     const tooth = wedge % 2 === 0 ? 1 : -1;
     const phase = y >= 0 ? 1 : -1;
-    const jag = 1 + sideWeight * tooth * phase * 0.5;
+    const jag = 1 + sideWeight * tooth * phase * intensity;
 
     const scaled = Math.max(0.25, jag);
     pos.setX(v, x * scaled);
@@ -1224,6 +1224,8 @@ function WeldBeadsInstanced({
       basisX: new THREE.Vector3(),
       basisZ: new THREE.Vector3(),
       basisMat: new THREE.Matrix4(),
+      prevForward: new THREE.Vector3(),
+      pathDir: new THREE.Vector3(),
     }),
     []
   );
@@ -1238,7 +1240,12 @@ function WeldBeadsInstanced({
   // one continuous worm instead of reading as separately chopped logs.
   const jointGeo = useMemo(() => new THREE.SphereGeometry(1, 10, 8), []);
   // Normal-looking bead cross-section with sharp jagged left/right toes (overheated bead).
-  const hotGeo = useMemo(() => createJaggedBeadGeometry(32), []);
+  const hotJagIntensity = THREE.MathUtils.clamp(weldSettings.hot_jag_intensity ?? 0.5, 0, 1);
+  const hotGeo = useMemo(
+    () => createJaggedBeadGeometry(32, hotJagIntensity),
+    [hotJagIntensity]
+  );
+  useEffect(() => () => hotGeo.dispose(), [hotGeo]);
   const craterGeo = useMemo(() => new THREE.CapsuleGeometry(1, 1, 8, 8), []);
 
   // Materials for 3 Separate Visual Channels
@@ -1368,6 +1375,25 @@ function WeldBeadsInstanced({
     );
     const splatterVariance = THREE.MathUtils.clamp(weldSettings.splatter_size_variance ?? 0.6, 0, 1);
 
+    // Debug-tunable too-cold worm controls
+    const coldScale = Math.max(0.05, weldSettings.cold_rope_scale ?? 1.0);
+    const coldWidthScale = Math.max(0.05, weldSettings.cold_width_scale ?? 1.0);
+    const coldHeightScale = Math.max(0.05, weldSettings.cold_height_scale ?? 1.0);
+    const coldLumpiness = THREE.MathUtils.clamp(weldSettings.cold_lumpiness ?? 0.45, 0, 1);
+    const coldWander = Math.max(0, (weldSettings.cold_wander_mm ?? 12.0) * SPLATTER_MM_TO_WORLD);
+    const coldBreakChance = THREE.MathUtils.clamp(weldSettings.cold_break_chance ?? 0.12, 0, 1);
+
+    // Debug-tunable too-hot ugly bead controls
+    const hotScale = Math.max(0.05, weldSettings.hot_bead_scale ?? 1.0);
+    const hotWidthVariation = THREE.MathUtils.clamp(weldSettings.hot_width_variation ?? 0.55, 0, 1);
+    const hotHeightVariation = THREE.MathUtils.clamp(
+      weldSettings.hot_height_variation ?? 0.6,
+      0,
+      1
+    );
+    const hotMeshBlend = THREE.MathUtils.clamp(weldSettings.hot_mesh_blend ?? 0.6, 0, 1);
+    const hotCraterDensity = THREE.MathUtils.clamp(weldSettings.hot_crater_density ?? 0.16, 0, 1);
+
     // Tube-extrusion chain state: the previous path node and the bead index it came from, so
     // consecutive defect beads are stitched into one continuous extruded tube.
     let prevTubeIndex = -1;
@@ -1442,6 +1468,41 @@ function WeldBeadsInstanced({
       return emitted;
     };
 
+    // Resolves the travel frame of a defect bead from the actual deposited path
+    // (previous -> next bead) rather than from the stored torch orientation. Using the real
+    // path keeps the extruded tube, the jagged toes and the lateral meander aligned with the
+    // direction of travel even when the torch swings around a corner. Falls back to the bead
+    // quaternion for isolated beads with no usable neighbours.
+    const resolveTravelFrame = (index: number, bead: InternalBead) => {
+      scratch.pathDir.set(0, 0, 0);
+      const before = index > 0 ? beads[index - 1] : null;
+      const after = index + 1 < totalCount ? beads[index + 1] : null;
+
+      if (before?.pos && after?.pos) {
+        scratch.pathDir.subVectors(after.pos, before.pos);
+      } else if (after?.pos) {
+        scratch.pathDir.subVectors(after.pos, bead.pos);
+      } else if (before?.pos) {
+        scratch.pathDir.subVectors(bead.pos, before.pos);
+      }
+      scratch.pathDir.y = 0;
+
+      if (scratch.pathDir.lengthSq() < 1e-10) {
+        scratch.pathDir.set(1, 0, 0).applyQuaternion(bead.quaternion);
+        scratch.pathDir.y = 0;
+      }
+      if (scratch.pathDir.lengthSq() < 1e-10) {
+        scratch.pathDir.set(0, 0, 1);
+      }
+
+      scratch.forward.copy(scratch.pathDir).normalize();
+      // Right-hand lateral axis of the joint, always perpendicular to the live travel
+      // direction so the bead cross-section rotates with the path.
+      scratch.side.set(0, 1, 0).cross(scratch.forward);
+      if (scratch.side.lengthSq() < 1e-10) scratch.side.set(1, 0, 0);
+      scratch.side.normalize();
+    };
+
     for (let i = 0; i < totalCount; i++) {
       const bead = beads[i];
       if (!bead || !bead.pos || !bead.quaternion || !bead.scale) continue;
@@ -1470,42 +1531,49 @@ function WeldBeadsInstanced({
       //    on itself. Cold metal doesn't wet the plate, so it piles into a stringy worm.
       // ------------------------------------------------------------------------------------
       if (beadArc === 'too_cold_stubbing') {
-        const ropeRadius = Math.max(sx, sz) * 0.34;
+        const ropeRadius = Math.max(sx, sz) * 0.34 * coldScale * coldWidthScale;
+        const ropeHeight = Math.max(sx, sz) * 0.34 * coldScale * coldHeightScale;
 
         // Slow, low-frequency swelling so the rope thickens and thins gradually along its
         // length (worm-like) rather than stepping between fat and thin chopped segments.
         const nodulePulse =
-          0.82 + valueNoise(i * 0.11) * 0.42 + (valueNoise(i * 0.33 + 4.7) - 0.5) * 0.16;
+          1 +
+          ((valueNoise(i * 0.11) - 0.5) * 1.1 + (valueNoise(i * 0.33 + 4.7) - 0.5) * 0.4) *
+            coldLumpiness;
 
-        // Travel (local X) and cross-joint (local Z) axes of the deposited bead, flattened
-        // onto the plate plane so the extrusion path hugs the workpiece surface.
-        scratch.forward.set(1, 0, 0).applyQuaternion(bead.quaternion);
-        scratch.forward.y = 0;
-        if (scratch.forward.lengthSq() < 1e-8) scratch.forward.set(0, 0, 1);
-        scratch.forward.normalize();
-        scratch.side.set(0, 0, 1).applyQuaternion(bead.quaternion);
-        scratch.side.y = 0;
-        if (scratch.side.lengthSq() < 1e-8) scratch.side.set(1, 0, 0);
-        scratch.side.normalize();
+        // Travel frame taken from the deposited path so the worm follows direction changes.
+        resolveTravelFrame(i, bead);
 
         // Two-octave meander: a long slow snake across the joint with a smaller secondary
         // squirm on top of it, so the rope crawls like a worm instead of a straight chain.
         const lateral =
-          (valueNoise(i * 0.045) - 0.5) * 2 * ropeRadius * 4.6 +
-          (valueNoise(i * 0.17 + 23.9) - 0.5) * 2 * ropeRadius * 1.3;
+          (valueNoise(i * 0.045) - 0.5) * 2 * coldWander +
+          (valueNoise(i * 0.17 + 23.9) - 0.5) * 2 * coldWander * 0.3;
         const lift =
-          valueNoise(i * 0.07 + 17.3) * ropeRadius * 0.85 +
-          (valueNoise(i * 0.26 + 61.1) - 0.5) * ropeRadius * 0.3;
+          valueNoise(i * 0.07 + 17.3) * ropeHeight * 0.85 +
+          (valueNoise(i * 0.26 + 61.1) - 0.5) * ropeHeight * 0.3;
 
         scratch.node.copy(bead.pos);
         scratch.node.addScaledVector(scratch.side, lateral);
-        scratch.node.y = WORKPIECE_TOP_Y + ropeRadius * nodulePulse * 0.9 + lift;
+        scratch.node.y = WORKPIECE_TOP_Y + ropeHeight * nodulePulse * 0.9 + lift;
 
-        const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'cold';
-        const segmentRadius = ropeRadius * nodulePulse;
+        // Cold metal stubs out: the rope randomly breaks into disconnected lengths.
+        const broken = coldBreakChance > 0 && hashRandom(i * 2.113 + 6.7) < coldBreakChance;
+
+        const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'cold' && !broken;
+        const segmentRadius = Math.max(1e-5, ropeRadius * nodulePulse);
+        const segmentHeight = Math.max(1e-5, ropeHeight * nodulePulse);
         const maxSegLength = Math.max(ropeRadius * 3.0, beadGap * 2.5);
         if (
-          buildTubeSegment(contiguous, scratch.forward, segmentRadius, 1.06, maxSegLength) &&
+          buildTubeSegment(
+            contiguous,
+            scratch.forward,
+            segmentRadius,
+            1.06,
+            maxSegLength,
+            scratch.side,
+            segmentHeight
+          ) &&
           tubeCount < TUBE_INSTANCE_CAP
         ) {
           tubeMeshRef.current.setMatrixAt(tubeCount, dummy.matrix);
@@ -1518,8 +1586,8 @@ function WeldBeadsInstanced({
           if (jointCount < TUBE_INSTANCE_CAP) {
             // After buildTubeSegment, scratch.prevNode holds this segment's end node.
             dummy.position.copy(scratch.prevNode);
+            dummy.scale.set(segmentRadius * 1.02, segmentHeight * 1.02, segmentRadius * 1.02);
             dummy.quaternion.identity();
-            dummy.scale.setScalar(segmentRadius * 1.02);
             dummy.updateMatrix();
             jointMeshRef.current.setMatrixAt(jointCount, dummy.matrix);
             tempColor.copy(coldSlagColor);
@@ -1536,23 +1604,18 @@ function WeldBeadsInstanced({
       //    the left / right edges, undercut / burn pits and a random splatter scatter.
       // ------------------------------------------------------------------------------------
       } else if (beadArc === 'too_hot_globular') {
-        const baseRadius = Math.max(sx, sz) * 0.5;
+        const baseRadius = Math.max(sx, sz) * 0.5 * hotScale;
 
         // Independent width & height pulses so the bead varies in intensity along its run
         // instead of being an even rope of spheres.
-        const widthPulse = 0.78 + valueNoise(i * 0.14 + 5.1) * 0.72;
-        const heightPulse = 0.5 + valueNoise(i * 0.23 + 41.9) * 0.9;
-        const segmentRadius = baseRadius * widthPulse;
-        const segmentHeight = baseRadius * 0.62 * heightPulse;
+        const widthPulse = 1 + (valueNoise(i * 0.14 + 5.1) - 0.5) * 1.6 * hotWidthVariation;
+        const heightPulse = 1 + (valueNoise(i * 0.23 + 41.9) - 0.5) * 1.8 * hotHeightVariation;
+        const segmentRadius = Math.max(1e-5, baseRadius * widthPulse);
+        const segmentHeight = Math.max(1e-5, baseRadius * 0.62 * heightPulse);
 
-        scratch.forward.set(1, 0, 0).applyQuaternion(bead.quaternion);
-        scratch.forward.y = 0;
-        if (scratch.forward.lengthSq() < 1e-8) scratch.forward.set(0, 0, 1);
-        scratch.forward.normalize();
-        scratch.side.set(0, 0, 1).applyQuaternion(bead.quaternion);
-        scratch.side.y = 0;
-        if (scratch.side.lengthSq() < 1e-8) scratch.side.set(1, 0, 0);
-        scratch.side.normalize();
+        // Travel frame taken from the deposited path so the jagged toes and the bead
+        // cross-section stay square to the joint when the torch turns a corner.
+        resolveTravelFrame(i, bead);
 
         const lateral = (valueNoise(i * 0.28 + 31.7) - 0.5) * 2 * baseRadius * 0.35;
 
@@ -1566,33 +1629,71 @@ function WeldBeadsInstanced({
 
         const contiguous = prevTubeIndex === i - 1 && prevTubeKind === 'hot';
         const maxSegLength = Math.max(baseRadius * 3.0, beadGap * 2.5);
+        // The jagged shell is emitted at the blended outer size; the smooth "normal bead"
+        // layer sits just inside it so the two meshes read as one welded-together bead.
+        const shellRadius = segmentRadius * (0.86 + 0.44 * hotMeshBlend);
+        const shellHeight = segmentHeight * (0.86 + 0.44 * hotMeshBlend);
+        const coreScale = 1 - 0.22 * hotMeshBlend;
         if (
           buildTubeSegment(
             contiguous,
             scratch.forward,
-            segmentRadius,
+            shellRadius,
             1.1,
             maxSegLength,
             scratch.side,
-            segmentHeight
-          ) &&
-          hotCount < TUBE_INSTANCE_CAP
+            shellHeight
+          )
         ) {
-          hotMeshRef.current.setMatrixAt(hotCount, dummy.matrix);
-          tempColor.set('#dc2626');
-          hotMeshRef.current.setColorAt(hotCount, tempColor);
-          hotCount++;
+          const segLengthScale = dummy.scale.y;
+
+          if (hotMeshBlend > 0.02 && hotCount < TUBE_INSTANCE_CAP) {
+            hotMeshRef.current.setMatrixAt(hotCount, dummy.matrix);
+            tempColor.set('#dc2626');
+            hotMeshRef.current.setColorAt(hotCount, tempColor);
+            hotCount++;
+          }
+
+          // Smooth varying-bead layer: a normal (rounded) bead whose width and height follow
+          // the same pulses, blended underneath the jagged shell.
+          if (tubeCount < TUBE_INSTANCE_CAP) {
+            dummy.scale.set(segmentRadius * coreScale, segLengthScale, segmentHeight * coreScale);
+            dummy.updateMatrix();
+            tubeMeshRef.current.setMatrixAt(tubeCount, dummy.matrix);
+            tempColor.set('#dc2626');
+            tubeMeshRef.current.setColorAt(tubeCount, tempColor);
+            tubeCount++;
+          }
+
+          // Rounded joint so consecutive smooth segments blend instead of showing flat caps.
+          if (jointCount < TUBE_INSTANCE_CAP) {
+            dummy.position.copy(scratch.prevNode);
+            dummy.quaternion.identity();
+            dummy.scale.set(
+              segmentRadius * coreScale,
+              segmentHeight * coreScale,
+              segmentRadius * coreScale
+            );
+            dummy.updateMatrix();
+            jointMeshRef.current.setMatrixAt(jointCount, dummy.matrix);
+            tempColor.set('#dc2626');
+            jointMeshRef.current.setColorAt(jointCount, tempColor);
+            jointCount++;
+          }
         }
         prevTubeIndex = i;
         prevTubeKind = 'hot';
 
         // Blown-out craters: shallow pits burned down into the plate (flat, never pillars).
-        if (hashRandom(i * 3.31) < 0.16 && craterCount < CRATER_INSTANCE_CAP) {
+        if (hashRandom(i * 3.31) < hotCraterDensity && craterCount < CRATER_INSTANCE_CAP) {
           const craterRadius = segmentRadius * (0.75 + hashRandom(i * 5.77) * 0.6);
           dummy.position.copy(scratch.node);
           dummy.position.addScaledVector(scratch.side, (hashRandom(i * 8.19) - 0.5) * segmentRadius);
           dummy.position.y = WORKPIECE_TOP_Y + craterRadius * 0.05;
-          dummy.quaternion.copy(bead.quaternion);
+          scratch.basisZ.set(0, 1, 0);
+          scratch.basisX.crossVectors(scratch.forward, scratch.basisZ);
+          scratch.basisMat.makeBasis(scratch.forward, scratch.basisZ, scratch.basisX);
+          dummy.quaternion.setFromRotationMatrix(scratch.basisMat);
           dummy.scale.set(craterRadius, craterRadius * 0.12, craterRadius * 0.85);
           dummy.updateMatrix();
 
@@ -1604,12 +1705,15 @@ function WeldBeadsInstanced({
 
         // Undercut groove: a dark sunken notch alongside the tube toe where the arc has
         // eaten into the plate.
-        if (undercut > 0.55 && craterCount < CRATER_INSTANCE_CAP) {
+        if (undercut > 1 - hotCraterDensity * 2.5 && craterCount < CRATER_INSTANCE_CAP) {
           const grooveSide = hashRandom(i * 13.7) < 0.5 ? 1 : -1;
           dummy.position.copy(scratch.node);
           dummy.position.addScaledVector(scratch.side, grooveSide * segmentRadius * 1.15);
           dummy.position.y = WORKPIECE_TOP_Y + segmentRadius * 0.04;
-          dummy.quaternion.copy(bead.quaternion).multiply(capsuleAlignZQuat);
+          scratch.basisZ.set(0, 1, 0);
+          scratch.basisX.crossVectors(scratch.forward, scratch.basisZ);
+          scratch.basisMat.makeBasis(scratch.forward, scratch.basisZ, scratch.basisX);
+          dummy.quaternion.setFromRotationMatrix(scratch.basisMat).multiply(capsuleAlignZQuat);
           dummy.scale.set(segmentRadius * 0.16, segmentRadius * 0.9, segmentRadius * 0.12);
           dummy.updateMatrix();
 
