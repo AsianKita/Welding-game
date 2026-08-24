@@ -319,7 +319,7 @@ export function WeldDebugTool({
       {/* Toolbar: Sub-tabs and Persistence (Save / Reset) */}
       <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-slate-800/80 pb-1.5">
         {/* Subtabs */}
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1 w-full">
           <button
             onClick={() => setActiveTab('thermal')}
             className={`py-1 px-2 rounded-lg font-bold text-[10px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
@@ -440,7 +440,7 @@ export function WeldDebugTool({
         </div>
 
         {/* Persistence Actions */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 ml-auto">
           <button
             type="button"
             onClick={handleSaveAll}
