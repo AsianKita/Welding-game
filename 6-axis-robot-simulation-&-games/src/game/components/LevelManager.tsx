@@ -25,6 +25,8 @@ interface LevelManagerProps {
 }
 
 interface ActiveDialogue {
+  /** Increments per trigger so repeating the same banter restarts at the first line. */
+  key: number;
   lines: DialogueLine[];
   hostile: boolean;
   /** Phase to enter once the player dismisses the dialogue. */
@@ -43,10 +45,17 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
   const [phase, setPhase] = useState<LevelPhase>('intro');
   const [hp, setHp] = useState(config.maxHp);
   const [dialogue, setDialogue] = useState<ActiveDialogue | null>(() => ({
+    key: 0,
     lines: config.script.intro ?? [],
     hostile: false,
     next: 'assembly',
   }));
+  const dialogueKeyRef = useRef(0);
+  const showDialogue = useCallback((next: Omit<ActiveDialogue, 'key'>) => {
+    dialogueKeyRef.current += 1;
+    setDialogue({ ...next, key: dialogueKeyRef.current });
+  }, []);
+
   const [shake, setShake] = useState(false);
   const [tackedIds, setTackedIds] = useState<string[]>([]);
   const [groundSamples, setGroundSamples] = useState<number[]>([]);
@@ -75,8 +84,8 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
     setWeldReport(null);
     setPhase('intro');
     setRunId((r) => r + 1);
-    setDialogue({ lines: config.script.intro ?? [], hostile: false, next: 'assembly' });
-  }, [config]);
+    showDialogue({ lines: config.script.intro ?? [], hostile: false, next: 'assembly' });
+  }, [config, showDialogue]);
 
   /**
    * Shows a banter line. Damaging banter costs 1 HP, shakes the screen and,
@@ -92,7 +101,7 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
       const dealsDamage = damage ?? entry.damage;
 
       if (!dealsDamage) {
-        setDialogue({ lines: entry.lines, hostile: true });
+        showDialogue({ lines: entry.lines, hostile: true });
         return;
       }
 
@@ -104,16 +113,16 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
       setHp(remaining);
 
       if (remaining <= 0) {
-        setDialogue({
+        showDialogue({
           lines: [...entry.lines, ...(config.script.levelFailed ?? [])],
           hostile: true,
           next: 'failed',
         });
       } else {
-        setDialogue({ lines: entry.lines, hostile: true });
+        showDialogue({ lines: entry.lines, hostile: true });
       }
     },
-    [config, hp]
+    [config, hp, showDialogue]
   );
 
   const dismissDialogue = useCallback(() => {
@@ -124,13 +133,13 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
 
   const handleAligned = useCallback(
     (_result: AlignmentResult) => {
-      setDialogue({
+      showDialogue({
         lines: config.script.assemblyComplete ?? [],
         hostile: false,
         next: 'tacking',
       });
     },
-    [config]
+    [config, showDialogue]
   );
 
   const handleMisaligned = useCallback(() => {
@@ -164,28 +173,33 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
       triggerBanter('incompleteGrind');
       return;
     }
-    setDialogue({
+    showDialogue({
       lines: config.script.grindComplete ?? [],
       hostile: false,
       next: 'execution',
     });
-  }, [config, grindProgress, triggerBanter]);
+  }, [config, grindProgress, triggerBanter, showDialogue]);
 
-  /** Workpiece outline injected into the forge, derived from the assembled reference part. */
-  const forgePoints = useMemo(
-    () =>
-      phase === 'execution' || phase === 'evaluation'
-        ? buildWorkpieceOutline(config, transforms, FORGE_DRAW_PLANE_Y)
-        : [],
-    [config, transforms, phase]
-  );
+  /**
+   * Geometry handed to the welding simulation. The joint keeps the orientation the
+   * player built, but is re-centred on the forge table so it can never land off-table.
+   */
+  const forgeGeometry = useMemo(() => {
+    if (phase !== 'execution' && phase !== 'evaluation') {
+      return { points: [] as THREE.Vector3[], weldNodes: [] as THREE.Vector3[] };
+    }
+    const reference = transforms[referencePartId];
+    const offsetX = reference?.position[0] ?? 0;
+    const offsetZ = reference?.position[2] ?? 0;
 
-  /** Weld path injected into the forge: the tacked seam, lifted onto the workpiece top face. */
-  const forgeWeldNodes = useMemo(() => {
-    if (phase !== 'execution' && phase !== 'evaluation') return [];
-    const world = localPointsToWorld(config.seam, transforms[referencePartId]);
-    return world.map((p) => new THREE.Vector3(p.x, FORGE_WORKPIECE_TOP_Y, p.z));
-  }, [config.seam, transforms, referencePartId, phase]);
+    const points = buildWorkpieceOutline(config, transforms, FORGE_DRAW_PLANE_Y).map(
+      (p) => new THREE.Vector3(p.x - offsetX, FORGE_DRAW_PLANE_Y, p.z - offsetZ)
+    );
+    const weldNodes = localPointsToWorld(config.seam, reference).map(
+      (p) => new THREE.Vector3(p.x - offsetX, FORGE_WORKPIECE_TOP_Y, p.z - offsetZ)
+    );
+    return { points, weldNodes };
+  }, [config, transforms, referencePartId, phase]);
 
   const handleWeldComplete = useCallback(
     (report: WeldQualityReport) => {
@@ -196,7 +210,7 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
 
       if (passed) {
         setPhase('evaluation');
-        setDialogue({ lines: config.script.success ?? [], hostile: false, next: 'success' });
+        showDialogue({ lines: config.script.success ?? [], hostile: false, next: 'success' });
       } else if (report.totalBeads < config.evaluation.minBeadCount) {
         triggerBanter('noWeld');
       } else {
@@ -204,7 +218,7 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
         triggerBanter('badWeld', true);
       }
     },
-    [config, triggerBanter]
+    [config, triggerBanter, showDialogue]
   );
 
   // A failed weld that didn't cost the last hard hat sends the player back to the torch.
@@ -292,8 +306,8 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
           <FabricationForge
             key={`forge-${runId}`}
             initialPhase="execute"
-            initialPoints={forgePoints}
-            initialWeldNodes={forgeWeldNodes}
+            initialPoints={forgeGeometry.points}
+            initialWeldNodes={forgeGeometry.weldNodes}
             hideStageControls
             onWeldComplete={handleWeldComplete}
             onBack={onExit}
@@ -359,6 +373,7 @@ export default function LevelManager({ levelId = 'level_1', onExit }: LevelManag
 
       {dialogue && (
         <DialogueBox
+          key={dialogue.key}
           config={config}
           lines={dialogue.lines}
           hostile={dialogue.hostile}
