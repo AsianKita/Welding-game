@@ -1,6 +1,6 @@
 {
   "id": "level_1",
-  "title": "Level 1 — The Thingy Jiggy",
+  "title": "Level 1 \u2014 The Thingy Jiggy",
   "maxHp": 3,
   "portraits": [
     {
@@ -62,6 +62,18 @@
         "speaker": "pops_angry",
         "text": "Hard hat's cracked, and so's my patience. Start over."
       }
+    ],
+    "grindComplete": [
+      {
+        "speaker": "pops",
+        "text": "Clean metal, clean bead. Alright, get on the gun."
+      }
+    ],
+    "weldStart": [
+      {
+        "speaker": "pops",
+        "text": "Strike your arc and keep it moving. I'll be watching the puddle."
+      }
     ]
   },
   "banter": {
@@ -94,6 +106,26 @@
           "text": "That bead looks like a rooster walked through it. Grind it out and go again."
         }
       ]
+    },
+    "incompleteGrind": {
+      "id": "incompleteGrind",
+      "damage": false,
+      "lines": [
+        {
+          "speaker": "pops",
+          "text": "Mill scale and rust don't weld, rookie. Grind the whole seam."
+        }
+      ]
+    },
+    "noWeld": {
+      "id": "noWeld",
+      "damage": false,
+      "lines": [
+        {
+          "speaker": "pops",
+          "text": "You haven't laid a single bead. Strike the arc."
+        }
+      ]
     }
   },
   "parts": [
@@ -101,48 +133,143 @@
       "id": "plate_a",
       "label": "Plate A",
       "shape": "box",
-      "size": [0.9, 0.08, 0.4],
+      "size": [
+        0.9,
+        0.08,
+        0.4
+      ],
       "color": "#94a3b8",
       "spawn": {
-        "position": [-0.75, 0.04, 0.45],
-        "rotation": [0, 0, 0]
+        "position": [
+          -0.75,
+          0.04,
+          0.45
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
       }
     },
     {
       "id": "plate_b",
       "label": "Plate B",
       "shape": "box",
-      "size": [0.9, 0.08, 0.4],
+      "size": [
+        0.9,
+        0.08,
+        0.4
+      ],
       "color": "#cbd5e1",
       "spawn": {
-        "position": [0.75, 0.04, -0.45],
-        "rotation": [0, 0.7853981634, 0]
+        "position": [
+          0.75,
+          0.04,
+          -0.45
+        ],
+        "rotation": [
+          0,
+          0.7853981634,
+          0
+        ]
       }
     }
   ],
   "tolerance": {
     "positionMeters": 0.08,
     "rotationDegrees": 10,
-    "symmetricRotation": true
+    "symmetricRotation": true,
+    "relative": true
   },
   "tackPoints": [
-    { "id": "tack_nw", "position": [-0.45, 0.08, -0.2], "radius": 0.07 },
-    { "id": "tack_ne", "position": [0.45, 0.08, -0.2], "radius": 0.07 },
-    { "id": "tack_sw", "position": [-0.45, 0.08, 0.2], "radius": 0.07 },
-    { "id": "tack_se", "position": [0.45, 0.08, 0.2], "radius": 0.07 }
+    {
+      "id": "tack_start",
+      "position": [
+        -0.45,
+        0.04,
+        0.0
+      ],
+      "radius": 0.07
+    },
+    {
+      "id": "tack_mid_left",
+      "position": [
+        -0.15,
+        0.04,
+        0.0
+      ],
+      "radius": 0.07
+    },
+    {
+      "id": "tack_mid_right",
+      "position": [
+        0.15,
+        0.04,
+        0.0
+      ],
+      "radius": 0.07
+    },
+    {
+      "id": "tack_end",
+      "position": [
+        0.45,
+        0.04,
+        0.0
+      ],
+      "radius": 0.07
+    }
   ],
   "targetState": {
     "levelId": "level_1",
     "note": "Default T-joint: Plate B stood on edge on the centreline of Plate A.",
     "parts": {
       "plate_a": {
-        "position": [0, 0.04, 0],
-        "rotation": [0, 0, 0]
+        "position": [
+          0,
+          0.04,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
       },
       "plate_b": {
-        "position": [0, 0.28, 0],
-        "rotation": [1.5707963268, 0, 0]
+        "position": [
+          0,
+          0.28,
+          0
+        ],
+        "rotation": [
+          1.5707963268,
+          0,
+          0
+        ]
       }
     }
+  },
+  "referencePartId": "plate_a",
+  "seam": [
+    [
+      -0.45,
+      0.04,
+      0.0
+    ],
+    [
+      0.45,
+      0.04,
+      0.0
+    ]
+  ],
+  "grinding": {
+    "sampleCount": 14,
+    "toolRadius": 0.09,
+    "requiredProgress": 1.0
+  },
+  "evaluation": {
+    "minGoodWeldPercentage": 0.5,
+    "minBeadCount": 6
   }
 }

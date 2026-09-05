@@ -62,10 +62,40 @@ import { useWeldAudio } from '../../hooks/useWeldAudio';
 import { useWeldPhysics } from '../../hooks/useWeldPhysics';
 import { WeldSpatter } from './WeldSpatter';
 
+export type ForgePhase = 'draw' | 'smelt' | 'done' | 'plan_path' | 'execute';
+
+export interface WeldQualityReport {
+  /** Total bead segments deposited along the path. */
+  totalBeads: number;
+  /** Beads that were both arc-stable and travelling at a good speed. */
+  goodBeads: number;
+  /** goodBeads / totalBeads, 0..1. Zero when nothing was deposited. */
+  goodPercentage: number;
+  /** Bead counts bucketed by arc status. */
+  arcCounts: Record<string, number>;
+  /** Bead counts bucketed by travel status. */
+  travelCounts: Record<string, number>;
+  /** Bead counts bucketed by overall weld health. */
+  healthCounts: Record<string, number>;
+}
+
 export interface FabricationForgeProps {
   onBack?: () => void;
   onPathConfirmed?: (shape: THREE.Shape, weldPath: THREE.Vector3[]) => void;
   onShapeCreated?: (shapeGroup: THREE.Group) => void;
+  /**
+   * Campaign injection: start directly in a given phase (e.g. 'execute') so the
+   * LevelManager can bypass the sandbox draw -> smelt -> plan flow.
+   */
+  initialPhase?: ForgePhase;
+  /** Campaign injection: workpiece outline points (world XZ) for the extruded shape. */
+  initialPoints?: THREE.Vector3[];
+  /** Campaign injection: pre-computed weld path waypoints (world space). */
+  initialWeldNodes?: THREE.Vector3[];
+  /** Fired once a weld run finishes, with per-bead quality statistics. */
+  onWeldComplete?: (report: WeldQualityReport) => void;
+  /** Hides the sandbox stage navigation so campaign levels stay on rails. */
+  hideStageControls?: boolean;
 }
 
 // 3X Table Dimensions: (3.75m wide x 2.55m deep)
@@ -2034,13 +2064,24 @@ export default function FabricationForgeView({
   onBack,
   onPathConfirmed,
   onShapeCreated,
+  initialPhase = 'draw',
+  initialPoints,
+  initialWeldNodes,
+  onWeldComplete,
+  hideStageControls = false,
 }: FabricationForgeProps) {
-  const [points, setPoints] = useState<THREE.Vector3[]>([]);
+  const [points, setPoints] = useState<THREE.Vector3[]>(() =>
+    initialPoints ? initialPoints.map((p) => p.clone()) : []
+  );
   const [isDrawing, setIsDrawing] = useState(false);
-  const [phase, setPhase] = useState<'draw' | 'smelt' | 'done' | 'plan_path' | 'execute'>('draw');
-  const [cameraMode, setCameraMode] = useState<'isometric' | 'top' | 'front'>('top');
+  const [phase, setPhase] = useState<ForgePhase>(initialPhase);
+  const [cameraMode, setCameraMode] = useState<'isometric' | 'top' | 'front'>(
+    initialPhase === 'draw' ? 'top' : 'isometric'
+  );
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
-  const [weldNodes, setWeldNodes] = useState<THREE.Vector3[]>([]);
+  const [weldNodes, setWeldNodes] = useState<THREE.Vector3[]>(() =>
+    initialWeldNodes ? initialWeldNodes.map((p) => p.clone()) : []
+  );
   const [smeltProgress, setSmeltProgress] = useState(0);
 
   // Persistent Beads mutable list ref at parent level so beads NEVER disappear after weld completes
@@ -2161,14 +2202,15 @@ export default function FabricationForgeView({
 
   const handleReset = () => {
     playClickSound();
-    setPoints([]);
+    // Campaign levels reset back to the injected workpiece, not to a blank sketch.
+    setPoints(initialPoints ? initialPoints.map((p) => p.clone()) : []);
     setIsDrawing(false);
-    setPhase('draw');
+    setPhase(initialPhase);
     smeltTimeRef.current = 0;
     setSmeltProgress(0);
     setSelectedTemplate(null);
-    setCameraMode('top');
-    setWeldNodes([]);
+    setCameraMode(initialPhase === 'draw' ? 'top' : 'isometric');
+    setWeldNodes(initialWeldNodes ? initialWeldNodes.map((p) => p.clone()) : []);
     setIsWelding(false);
     beadsListRef.current = [];
     setBeadCount(0);
@@ -2241,6 +2283,42 @@ export default function FabricationForgeView({
     setBeadCount(0);
     setIsWelding(true);
   };
+
+  /**
+   * Emit a quality report whenever a weld run finishes (isWelding true -> false).
+   * The beads carry the per-sample arc/travel/health verdicts produced by the
+   * two-gate physics engine, so the report is a straight aggregation.
+   */
+  const wasWeldingRef = useRef(false);
+  useEffect(() => {
+    if (wasWeldingRef.current && !isWelding) {
+      const beads = beadsListRef.current;
+      const arcCounts: Record<string, number> = {};
+      const travelCounts: Record<string, number> = {};
+      const healthCounts: Record<string, number> = {};
+      let goodBeads = 0;
+
+      beads.forEach((bead) => {
+        const arc = bead.arcStatus ?? 'stable_spray';
+        const travel = bead.travelStatus ?? 'good_speed';
+        const health = bead.health ?? 'perfect';
+        arcCounts[arc] = (arcCounts[arc] ?? 0) + 1;
+        travelCounts[travel] = (travelCounts[travel] ?? 0) + 1;
+        healthCounts[health] = (healthCounts[health] ?? 0) + 1;
+        if (arc === 'stable_spray' && travel === 'good_speed') goodBeads += 1;
+      });
+
+      onWeldComplete?.({
+        totalBeads: beads.length,
+        goodBeads,
+        goodPercentage: beads.length > 0 ? goodBeads / beads.length : 0,
+        arcCounts,
+        travelCounts,
+        healthCounts,
+      });
+    }
+    wasWeldingRef.current = isWelding;
+  }, [isWelding, onWeldComplete]);
 
   // Quick Preset Templates for 3X Table
   const loadPresetTemplate = (type: 'bracket' | 'gusset' | 'flange' | 'chassis') => {
@@ -2737,17 +2815,19 @@ export default function FabricationForgeView({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        playClickSound();
-                        setPhase('plan_path');
-                        setIsWelding(false);
-                      }}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs border border-slate-800 transition-all cursor-pointer"
-                    >
-                      <RotateCcw size={11} />
-                      <span>Waypoints</span>
-                    </button>
+                    {!hideStageControls && (
+                      <button
+                        onClick={() => {
+                          playClickSound();
+                          setPhase('plan_path');
+                          setIsWelding(false);
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs border border-slate-800 transition-all cursor-pointer"
+                      >
+                        <RotateCcw size={11} />
+                        <span>Waypoints</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 

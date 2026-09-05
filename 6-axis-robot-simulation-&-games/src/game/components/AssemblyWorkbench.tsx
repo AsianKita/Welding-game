@@ -7,6 +7,7 @@ import {
   Bug,
   Check,
   ClipboardCopy,
+  Download,
   Eye,
   EyeOff,
   Magnet,
@@ -17,6 +18,7 @@ import {
   Upload,
 } from 'lucide-react';
 import PlaceholderPart from './PlaceholderPart';
+import { getReferencePartId, localPointsToWorld } from '../geometry';
 import { evaluateAlignment } from '../alignment';
 import {
   clearTargetState,
@@ -31,13 +33,34 @@ import type { AlignmentResult, AlignmentTolerance, TargetState, TransformData } 
 const DEG = 180 / Math.PI;
 const ROTATION_STEP_DEG = 15;
 
+/** Which campaign interaction the workbench is currently hosting. */
+export type WorkbenchMode = 'assembly' | 'tacking' | 'grinding';
+
 interface AssemblyWorkbenchProps {
   levelId?: string;
   onBack?: () => void;
-  /** Fired when the arrangement matches the authored target (drives State 1 -> State 2 later). */
+  /** Fired when the arrangement matches the authored target (State 1 -> State 2). */
   onAligned?: (result: AlignmentResult) => void;
-  /** Fired when the player submits a wrong arrangement (drives TriggerBanter + HP loss later). */
+  /** Fired when the player submits a wrong arrangement (drives TriggerBanter + HP loss). */
   onMisaligned?: (result: AlignmentResult) => void;
+  /** Campaign mode. Defaults to free assembly when used standalone. */
+  mode?: WorkbenchMode;
+  /** Tack point ids already applied (State 2). */
+  tackedIds?: string[];
+  onTack?: (tackId: string) => void;
+  /** Seam sample indices already ground (State 2.5). */
+  groundSampleIndices?: number[];
+  /** Grind samples in the reference part's local space. */
+  grindSamples?: Array<[number, number, number]>;
+  onGrindSample?: (index: number) => void;
+  /** Extra HUD rendered in the header (e.g. the hard hat HP bar). */
+  hudRight?: React.ReactNode;
+  /** One-line objective text shown above the controls. */
+  instructions?: string;
+  /** Extra controls rendered under the alignment readout (e.g. "Continue"). */
+  footer?: React.ReactNode;
+  /** Reports the live part transforms so the LevelManager can build the weld path. */
+  onTransformsChange?: (transforms: Record<string, TransformData>) => void;
 }
 
 function spawnTransforms(levelId: string): Record<string, TransformData> {
@@ -65,6 +88,16 @@ export default function AssemblyWorkbench({
   onBack,
   onAligned,
   onMisaligned,
+  mode = 'assembly',
+  tackedIds = [],
+  onTack,
+  groundSampleIndices = [],
+  grindSamples = [],
+  onGrindSample,
+  hudRight,
+  instructions,
+  footer,
+  onTransformsChange,
 }: AssemblyWorkbenchProps) {
   const config = useMemo(() => getLevelConfig(levelId), [levelId]);
 
@@ -83,6 +116,11 @@ export default function AssemblyWorkbench({
   const [importText, setImportText] = useState<string>('');
   const [showImport, setShowImport] = useState(false);
 
+  const [isGrinding, setIsGrinding] = useState(false);
+
+  const referencePartId = useMemo(() => getReferencePartId(config), [config]);
+  const partsAreLocked = mode !== 'assembly';
+
   const statusTimer = useRef<number | null>(null);
 
   const flashStatus = useCallback((message: string) => {
@@ -98,12 +136,27 @@ export default function AssemblyWorkbench({
     []
   );
 
+  // Releasing the pointer anywhere ends a grinder stroke.
+  useEffect(() => {
+    const stop = () => setIsGrinding(false);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    return () => {
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+    };
+  }, []);
+
   useEffect(() => {
     setTransforms(spawnTransforms(levelId));
     setTargetState(loadTargetState(levelId));
     setTolerance(getLevelConfig(levelId).tolerance);
     setResult(null);
   }, [levelId]);
+
+  useEffect(() => {
+    onTransformsChange?.(transforms);
+  }, [transforms, onTransformsChange]);
 
   const handleDrag = useCallback((partId: string, position: [number, number, number]) => {
     setTransforms((prev) => ({ ...prev, [partId]: { ...prev[partId], position } }));
@@ -158,6 +211,7 @@ export default function AssemblyWorkbench({
         setDebugMode((d) => !d);
         return;
       }
+      if (partsAreLocked && !debugMode) return;
       const step = e.shiftKey ? ROTATION_STEP_DEG / 3 : ROTATION_STEP_DEG;
       if (key === 'q') nudgeRotation(1, -step);
       else if (key === 'e') nudgeRotation(1, step);
@@ -170,7 +224,7 @@ export default function AssemblyWorkbench({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [nudgeRotation, nudgeHeight]);
+  }, [nudgeRotation, nudgeHeight, partsAreLocked, debugMode]);
 
   const handleSaveTargetState = () => {
     const next: TargetState = {
@@ -210,6 +264,18 @@ export default function AssemblyWorkbench({
       console.log(json);
       flashStatus('Clipboard blocked — JSON logged to the console instead.');
     }
+  };
+
+  const handleDownloadJson = () => {
+    if (!targetState) return;
+    const blob = new Blob([serializeTargetState(targetState)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${levelId}-target-state.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    flashStatus('Target state JSON downloaded.');
   };
 
   const handleImport = () => {
@@ -253,7 +319,7 @@ export default function AssemblyWorkbench({
   };
 
   const handleCheckAlignment = () => {
-    const evaluation = evaluateAlignment(transforms, targetState, tolerance);
+    const evaluation = evaluateAlignment(transforms, targetState, tolerance, referencePartId);
     setResult(evaluation);
     if (evaluation.aligned) {
       flashStatus('Alignment accepted.');
@@ -265,8 +331,20 @@ export default function AssemblyWorkbench({
   };
 
   const liveResult = useMemo(
-    () => evaluateAlignment(transforms, targetState, tolerance),
-    [transforms, targetState, tolerance]
+    () => evaluateAlignment(transforms, targetState, tolerance, referencePartId),
+    [transforms, targetState, tolerance, referencePartId]
+  );
+
+  const referenceTransform = transforms[referencePartId];
+
+  const worldTackPoints = useMemo(
+    () => localPointsToWorld(config.tackPoints.map((t) => t.position), referenceTransform),
+    [config.tackPoints, referenceTransform]
+  );
+
+  const worldGrindSamples = useMemo(
+    () => localPointsToWorld(grindSamples, referenceTransform),
+    [grindSamples, referenceTransform]
   );
 
   const selectedTransform = transforms[selectedPartId];
@@ -317,7 +395,7 @@ export default function AssemblyWorkbench({
               definition={part}
               transform={transforms[part.id]}
               selected={selectedPartId === part.id}
-              draggable
+              draggable={!partsAreLocked || debugMode}
               snapStep={snapEnabled ? 0.05 : 0}
               onSelect={setSelectedPartId}
               onDrag={handleDrag}
@@ -325,8 +403,62 @@ export default function AssemblyWorkbench({
             />
           ))}
 
+          {/* State 2: corner tack hitboxes */}
+          {mode === 'tacking' &&
+            config.tackPoints.map((tack, i) => {
+              const tacked = tackedIds.includes(tack.id);
+              return (
+                <mesh
+                  key={tack.id}
+                  position={worldTackPoints[i]}
+                  onPointerDown={(e: any) => {
+                    e.stopPropagation();
+                    if (!tacked) onTack?.(tack.id);
+                  }}
+                >
+                  <sphereGeometry args={[tack.radius, 16, 16]} />
+                  <meshStandardMaterial
+                    color={tacked ? '#22c55e' : '#f43f5e'}
+                    emissive={tacked ? '#16a34a' : '#be123c'}
+                    emissiveIntensity={tacked ? 0.7 : 0.45}
+                    transparent
+                    opacity={tacked ? 0.95 : 0.6}
+                  />
+                </mesh>
+              );
+            })}
+
+          {/* State 2.5: grinder prep samples along the seam */}
+          {mode === 'grinding' &&
+            worldGrindSamples.map((point, i) => {
+              const cleaned = groundSampleIndices.includes(i);
+              return (
+                <mesh
+                  key={`grind-${i}`}
+                  position={point}
+                  onPointerDown={(e: any) => {
+                    e.stopPropagation();
+                    setIsGrinding(true);
+                    if (!cleaned) onGrindSample?.(i);
+                  }}
+                  onPointerOver={() => {
+                    if (isGrinding && !cleaned) onGrindSample?.(i);
+                  }}
+                >
+                  <sphereGeometry args={[config.grinding.toolRadius * 0.55, 12, 12]} />
+                  <meshStandardMaterial
+                    color={cleaned ? '#e2e8f0' : '#78350f'}
+                    emissive={cleaned ? '#94a3b8' : '#000000'}
+                    emissiveIntensity={cleaned ? 0.4 : 0}
+                    roughness={cleaned ? 0.25 : 0.95}
+                    metalness={cleaned ? 0.9 : 0.2}
+                  />
+                </mesh>
+              );
+            })}
+
           <OrbitControls
-            enabled={!isDragging}
+            enabled={!isDragging && !isGrinding}
             enablePan={false}
             minDistance={1.6}
             maxDistance={8}
@@ -351,10 +483,12 @@ export default function AssemblyWorkbench({
             <span className="px-2 text-xs font-mono text-slate-400">{config.title}</span>
           </div>
 
+          <div className="pointer-events-auto flex items-center gap-2">
+            {hudRight}
           <button
             onClick={() => setDebugMode((d) => !d)}
             title="Toggle Debug Mode (`)"
-            className={`pointer-events-auto flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-mono border transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-mono border transition-all ${
               debugMode
                 ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
                 : 'bg-slate-950/85 text-slate-400 border-slate-800 hover:text-white'
@@ -362,6 +496,7 @@ export default function AssemblyWorkbench({
           >
             <Bug size={13} /> {debugMode ? 'Debug Mode: ON' : 'Debug Mode: OFF'}
           </button>
+          </div>
         </header>
 
         {status && (
@@ -373,6 +508,11 @@ export default function AssemblyWorkbench({
 
       {/* Control dock */}
       <div className="w-full max-h-[46vh] overflow-y-auto bg-slate-950/95 border-t border-slate-800 p-3 space-y-3">
+        {instructions && (
+          <p className="text-xs font-mono text-amber-300 border border-amber-500/30 bg-amber-500/5 rounded-lg px-3 py-2">
+            {instructions}
+          </p>
+        )}
         {/* Part selector + transform readout */}
         <div className="flex flex-wrap items-center gap-2">
           {config.parts.map((part) => {
@@ -419,15 +559,17 @@ export default function AssemblyWorkbench({
           >
             {showGhost ? <Eye size={12} /> : <EyeOff size={12} />} Target Ghost
           </button>
-          <button
-            onClick={handleResetParts}
-            className="px-3 py-1.5 rounded-lg text-xs font-mono border bg-slate-900 text-slate-400 border-slate-800 hover:text-white flex items-center gap-1.5"
-          >
-            <RotateCcw size={12} /> Reset Parts
-          </button>
+          {(!partsAreLocked || debugMode) && (
+            <button
+              onClick={handleResetParts}
+              className="px-3 py-1.5 rounded-lg text-xs font-mono border bg-slate-900 text-slate-400 border-slate-800 hover:text-white flex items-center gap-1.5"
+            >
+              <RotateCcw size={12} /> Reset Parts
+            </button>
+          )}
         </div>
 
-        {selectedTransform && (
+        {selectedTransform && (!partsAreLocked || debugMode) && (
           <div className="grid grid-cols-2 gap-3 text-[11px] font-mono">
             <div className="space-y-1">
               <div className="text-slate-500">Position (m)</div>
@@ -475,10 +617,12 @@ export default function AssemblyWorkbench({
           </div>
         )}
 
+        {(!partsAreLocked || debugMode) && (
         <p className="text-[10px] font-mono text-slate-500">
           Drag a part to move it on the table · Q/E yaw · R/F pitch · Z/X roll · PageUp/PageDown
           height · ` toggles Debug Mode
         </p>
+        )}
 
         {debugMode ? (
           <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
@@ -509,6 +653,13 @@ export default function AssemblyWorkbench({
                 className="px-3 py-1.5 rounded-lg text-xs font-mono bg-slate-900 text-slate-300 border border-slate-800 hover:text-white disabled:opacity-40 flex items-center gap-1.5"
               >
                 <ClipboardCopy size={12} /> Copy JSON
+              </button>
+              <button
+                onClick={handleDownloadJson}
+                disabled={!targetState}
+                className="px-3 py-1.5 rounded-lg text-xs font-mono bg-slate-900 text-slate-300 border border-slate-800 hover:text-white disabled:opacity-40 flex items-center gap-1.5"
+              >
+                <Download size={12} /> Download JSON
               </button>
               <button
                 onClick={() => setShowImport((s) => !s)}
@@ -595,12 +746,16 @@ export default function AssemblyWorkbench({
           </div>
         ) : (
           <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-            <button
-              onClick={handleCheckAlignment}
-              className="px-4 py-2 rounded-lg text-xs font-mono bg-emerald-500/20 text-emerald-200 border border-emerald-500/40 hover:bg-emerald-500/30"
-            >
-              Submit Assembly
-            </button>
+            {mode === 'assembly' && (
+              <button
+                onClick={handleCheckAlignment}
+                className="px-4 py-2 rounded-lg text-xs font-mono bg-emerald-500/20 text-emerald-200 border border-emerald-500/40 hover:bg-emerald-500/30"
+              >
+                Submit Assembly
+              </button>
+            )}
+            {footer}
+            {mode === 'assembly' && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
               {(result ?? liveResult).parts.map((p) => (
                 <div
@@ -620,7 +775,8 @@ export default function AssemblyWorkbench({
                 </div>
               ))}
             </div>
-            {!targetState && (
+            )}
+            {mode === 'assembly' && !targetState && (
               <p className="text-[10px] font-mono text-amber-400">
                 No expected orientation authored yet — switch to Debug Mode and press “Save Target
                 State”.

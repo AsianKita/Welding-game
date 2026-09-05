@@ -37,7 +37,7 @@ import SortingGame from "./SortingGame";
 import StackingGame from "./StackingGame";
 import TeachPendant from "./TeachPendant";
 import FabricationForge from "./FabricationForge";
-import AssemblyWorkbench from "../src/game/components/AssemblyWorkbench";
+import LevelManager from "../src/game/components/LevelManager";
 
 const ROTATION_STEP = 0.04;
 const GRAB_DISTANCE = 0.45;
@@ -376,7 +376,7 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
                 <HardHat size={24} />
               </div>
               <h2 className="text-lg font-bold text-slate-200 mb-1">Level 1: Assembly Bay</h2>
-              <p className="text-sm text-slate-400">Campaign assembly workbench with the level-authoring Debug Tool. Arrange the parts and save the expected orientation.</p>
+              <p className="text-sm text-slate-400">Story mode with Pops: assemble the joint, tack it, grind the seam, then burn it in. Includes the level-authoring Debug Tool.</p>
             </button>
           </div>
           
@@ -422,12 +422,7 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
       {/* Mode 5: Level 1 Assembly Workbench & Debug Authoring Tool */}
       {gameMode === "level1" && (
         <ErrorBoundary fallbackTitle="Level 1" onReset={() => setGameMode("hub")}>
-          <AssemblyWorkbench
-            levelId="level_1"
-            onBack={() => setGameMode("hub")}
-            onAligned={(result) => console.log('Assembly aligned:', result)}
-            onMisaligned={(result) => console.log('Assembly rejected:', result)}
-          />
+          <LevelManager levelId="level_1" onExit={() => setGameMode("hub")} />
         </ErrorBoundary>
       )}
 

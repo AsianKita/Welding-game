@@ -65,6 +65,12 @@ export interface PartDefinition {
 
 /** How close the player's arrangement must be to the authored target. */
 export interface AlignmentTolerance {
+  /**
+   * When true (default), part transforms are compared in the reference part's
+   * local frame, so the joint can be assembled anywhere on the table as long as
+   * the parts are correct relative to each other.
+   */
+  relative?: boolean;
   /** Max per-axis positional error, metres. */
   positionMeters: number;
   /** Max per-axis rotational error, degrees. */
@@ -83,6 +89,24 @@ export interface TargetState {
   note?: string;
 }
 
+/** Pass/fail thresholds for the Evaluation state, tuned per level. */
+export interface EvaluationConfig {
+  /** Fraction (0..1) of bead samples that must be arc-stable at a good travel speed. */
+  minGoodWeldPercentage: number;
+  /** Minimum beads that must be deposited for the run to count as a real attempt. */
+  minBeadCount: number;
+}
+
+/** Placeholder grinding/prep phase (State 2.5). */
+export interface GrindingConfig {
+  /** Number of prep samples spread along the seam. */
+  sampleCount: number;
+  /** Grinder head radius, metres: how close the tool must pass to clear a sample. */
+  toolRadius: number;
+  /** Fraction (0..1) of samples that must be cleared to finish prep. */
+  requiredProgress: number;
+}
+
 /** Corner hitbox for the Tacking state (State 2). */
 export interface TackPointConfig {
   id: string;
@@ -93,6 +117,11 @@ export interface TackPointConfig {
 export interface LevelConfig {
   id: string;
   title: string;
+  /**
+   * Part whose transform defines the local frame for relative alignment,
+   * tack points and the seam. Defaults to the first entry in `parts`.
+   */
+  referencePartId?: string;
   /** Starting HP, rendered as hard hats. */
   maxHp: number;
   portraits: PortraitConfig[];
@@ -103,6 +132,13 @@ export interface LevelConfig {
   parts: PartDefinition[];
   tolerance: AlignmentTolerance;
   tackPoints: TackPointConfig[];
+  /**
+   * Seam polyline in the reference part's local space. Drives the grinding
+   * samples and the weld path injected into the welding simulation.
+   */
+  seam: [number, number, number][];
+  grinding: GrindingConfig;
+  evaluation: EvaluationConfig;
   /** Default target state shipped with the level; overridable via the Debug Tool. */
   targetState?: TargetState;
 }
@@ -121,3 +157,14 @@ export interface AlignmentResult {
   aligned: boolean;
   parts: PartAlignmentResult[];
 }
+
+/** Ordered states of the Level 1 machine. */
+export type LevelPhase =
+  | 'intro'
+  | 'assembly'
+  | 'tacking'
+  | 'grinding'
+  | 'execution'
+  | 'evaluation'
+  | 'success'
+  | 'failed';
