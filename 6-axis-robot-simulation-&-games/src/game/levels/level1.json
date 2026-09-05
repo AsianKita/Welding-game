@@ -1,0 +1,148 @@
+{
+  "id": "level_1",
+  "title": "Level 1 — The Thingy Jiggy",
+  "maxHp": 3,
+  "portraits": [
+    {
+      "id": "pops",
+      "name": "Pops",
+      "initials": "PO",
+      "color": "#b45309",
+      "mood": "neutral"
+    },
+    {
+      "id": "pops_angry",
+      "name": "Pops",
+      "initials": "PO",
+      "color": "#dc2626",
+      "mood": "angry"
+    },
+    {
+      "id": "pops_pleased",
+      "name": "Pops",
+      "initials": "PO",
+      "color": "#15803d",
+      "mood": "pleased"
+    },
+    {
+      "id": "rookie",
+      "name": "Rookie",
+      "initials": "RK",
+      "color": "#0ea5e9",
+      "mood": "neutral"
+    }
+  ],
+  "script": {
+    "intro": [
+      {
+        "speaker": "pops",
+        "text": "Alright rookie, I need a thingy jiggy. Put these two pieces together, tack 'em, and weld 'em. Don't waste my wire."
+      }
+    ],
+    "assemblyComplete": [
+      {
+        "speaker": "pops",
+        "text": "Well, would you look at that. It's square. Now tack the corners before it walks off the table."
+      }
+    ],
+    "tackComplete": [
+      {
+        "speaker": "pops",
+        "text": "Tacked. Now burn it in. Steady hands, steady speed."
+      }
+    ],
+    "success": [
+      {
+        "speaker": "pops_pleased",
+        "text": "Huh. That'll hold. Don't let it go to your head, rookie."
+      }
+    ],
+    "levelFailed": [
+      {
+        "speaker": "pops_angry",
+        "text": "Hard hat's cracked, and so's my patience. Start over."
+      }
+    ]
+  },
+  "banter": {
+    "incorrectAssembly": {
+      "id": "incorrectAssembly",
+      "damage": true,
+      "lines": [
+        {
+          "speaker": "pops_angry",
+          "text": "That ain't a joint, that's a scrap pile. Line the pieces up like I showed you."
+        }
+      ]
+    },
+    "missedTack": {
+      "id": "missedTack",
+      "damage": true,
+      "lines": [
+        {
+          "speaker": "pops_angry",
+          "text": "Striking an arc with no tacks? It'll pull itself crooked before you hit the corner. Tack it first."
+        }
+      ]
+    },
+    "badWeld": {
+      "id": "badWeld",
+      "damage": true,
+      "lines": [
+        {
+          "speaker": "pops_angry",
+          "text": "That bead looks like a rooster walked through it. Grind it out and go again."
+        }
+      ]
+    }
+  },
+  "parts": [
+    {
+      "id": "plate_a",
+      "label": "Plate A",
+      "shape": "box",
+      "size": [0.9, 0.08, 0.4],
+      "color": "#94a3b8",
+      "spawn": {
+        "position": [-0.75, 0.04, 0.45],
+        "rotation": [0, 0, 0]
+      }
+    },
+    {
+      "id": "plate_b",
+      "label": "Plate B",
+      "shape": "box",
+      "size": [0.9, 0.08, 0.4],
+      "color": "#cbd5e1",
+      "spawn": {
+        "position": [0.75, 0.04, -0.45],
+        "rotation": [0, 0.7853981634, 0]
+      }
+    }
+  ],
+  "tolerance": {
+    "positionMeters": 0.08,
+    "rotationDegrees": 10,
+    "symmetricRotation": true
+  },
+  "tackPoints": [
+    { "id": "tack_nw", "position": [-0.45, 0.08, -0.2], "radius": 0.07 },
+    { "id": "tack_ne", "position": [0.45, 0.08, -0.2], "radius": 0.07 },
+    { "id": "tack_sw", "position": [-0.45, 0.08, 0.2], "radius": 0.07 },
+    { "id": "tack_se", "position": [0.45, 0.08, 0.2], "radius": 0.07 }
+  ],
+  "targetState": {
+    "levelId": "level_1",
+    "note": "Default T-joint: Plate B stood on edge on the centreline of Plate A.",
+    "parts": {
+      "plate_a": {
+        "position": [0, 0.04, 0],
+        "rotation": [0, 0, 0]
+      },
+      "plate_b": {
+        "position": [0, 0.28, 0],
+        "rotation": [1.5707963268, 0, 0]
+      }
+    }
+  }
+}

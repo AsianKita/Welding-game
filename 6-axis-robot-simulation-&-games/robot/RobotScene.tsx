@@ -22,6 +22,7 @@ import {
   PackageCheck,
   Target,
   Flame,
+  HardHat,
 } from "lucide-react";
 import {
   playGrabSound,
@@ -36,11 +37,12 @@ import SortingGame from "./SortingGame";
 import StackingGame from "./StackingGame";
 import TeachPendant from "./TeachPendant";
 import FabricationForge from "./FabricationForge";
+import AssemblyWorkbench from "../src/game/components/AssemblyWorkbench";
 
 const ROTATION_STEP = 0.04;
 const GRAB_DISTANCE = 0.45;
 
-export type GameMode = "hub" | "sandbox" | "sorting" | "stacking" | "fabrication";
+export type GameMode = "hub" | "sandbox" | "sorting" | "stacking" | "fabrication" | "level1";
 type ControlTab = "jog" | "sliders" | "presets" | "teach";
 type CameraPreset = "orbit" | "top" | "side" | "front";
 
@@ -244,7 +246,7 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
   return (
     <div className="flex flex-col flex-1 w-full h-full bg-[#0a0a0f] text-white select-none relative">
       {/* Universal Minimalist Floating Header */}
-      {gameMode !== 'hub' && gameMode !== 'fabrication' && (
+      {gameMode !== 'hub' && gameMode !== 'fabrication' && gameMode !== 'level1' && (
         <header className="absolute top-2 left-2 right-2 z-50 flex items-center justify-between pointer-events-none">
           {/* Left Side: Home Button */}
           <div className="pointer-events-auto flex items-center gap-1 bg-slate-950/80 backdrop-blur-md p-1 rounded-xl border border-slate-800 shadow-xl">
@@ -361,6 +363,21 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
               <h2 className="text-lg font-bold text-slate-200 mb-1">Fabrication Forge</h2>
               <p className="text-sm text-slate-400">Advanced 3-stage metal welding simulation. Smelt, plan paths, and execute welds.</p>
             </button>
+
+            {/* Level 1 Campaign Card */}
+            <button
+              onClick={() => {
+                playClickSound();
+                setGameMode("level1");
+              }}
+              className="flex flex-col items-start p-6 rounded-2xl bg-slate-900/50 hover:bg-slate-800 border border-slate-800 hover:border-rose-500/50 transition-all text-left group cursor-pointer"
+            >
+              <div className="p-3 rounded-xl bg-rose-500/20 text-rose-400 mb-4 group-hover:scale-110 transition-transform">
+                <HardHat size={24} />
+              </div>
+              <h2 className="text-lg font-bold text-slate-200 mb-1">Level 1: Assembly Bay</h2>
+              <p className="text-sm text-slate-400">Campaign assembly workbench with the level-authoring Debug Tool. Arrange the parts and save the expected orientation.</p>
+            </button>
           </div>
           
           {/* Mute Button on Hub */}
@@ -398,6 +415,18 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
             onPathConfirmed={(shape, weldPath) => {
               console.log('Stage 2 path confirmed:', { shape, weldPath });
             }}
+          />
+        </ErrorBoundary>
+      )}
+
+      {/* Mode 5: Level 1 Assembly Workbench & Debug Authoring Tool */}
+      {gameMode === "level1" && (
+        <ErrorBoundary fallbackTitle="Level 1" onReset={() => setGameMode("hub")}>
+          <AssemblyWorkbench
+            levelId="level_1"
+            onBack={() => setGameMode("hub")}
+            onAligned={(result) => console.log('Assembly aligned:', result)}
+            onMisaligned={(result) => console.log('Assembly rejected:', result)}
           />
         </ErrorBoundary>
       )}
