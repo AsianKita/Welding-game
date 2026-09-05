@@ -1,5 +1,5 @@
 # Welding-game
-cd /d "C:\Users\joshv\Welding-game"
-cd "6-axis-robot-simulation-games"
+cd C:\Users\joshv\temp-weld\6-axis-robot-simulation-games
+git checkout copilot/fix-weld-bead-visuals
 npm install
 npm run dev
