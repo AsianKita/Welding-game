@@ -62,10 +62,30 @@ import { useWeldAudio } from '../../hooks/useWeldAudio';
 import { useWeldPhysics } from '../../hooks/useWeldPhysics';
 import { WeldSpatter } from './WeldSpatter';
 
+/** Aggregated bead quality summary emitted when a weld run finishes. */
+export interface WeldCompletionReport {
+  beadCount: number;
+  goodBeadCount: number;
+  goodPercentage: number;
+  healthBreakdown: Record<string, number>;
+}
+
 export interface FabricationForgeProps {
   onBack?: () => void;
   onPathConfirmed?: (shape: THREE.Shape, weldPath: THREE.Vector3[]) => void;
   onShapeCreated?: (shapeGroup: THREE.Group) => void;
+  /**
+   * Campaign injection: start directly in a given stage (e.g. 'execute') with a
+   * workpiece outline and weld path handed over by the LevelManager, bypassing
+   * the default draw -> smelt -> plan flow.
+   */
+  initialPhase?: 'draw' | 'smelt' | 'done' | 'plan_path' | 'execute';
+  initialPoints?: THREE.Vector3[];
+  initialWeldNodes?: THREE.Vector3[];
+  /** Hides the stage-switching chrome so campaign levels stay on rails. */
+  hideStageControls?: boolean;
+  /** Fired once a weld run reaches the end of the path. */
+  onWeldComplete?: (report: WeldCompletionReport) => void;
 }
 
 // 3X Table Dimensions: (3.75m wide x 2.55m deep)
@@ -2007,6 +2027,7 @@ function InteractiveFabricationScene({
   weldSettings,
   beadsListRef,
   onShapeCreated,
+  onWeldFinished,
   currentWidth = 9.0,
   currentHeight = 3.2,
   weldHealth = 'perfect',
@@ -2032,6 +2053,7 @@ function InteractiveFabricationScene({
   weldSettings: RoboDKWeldSettings;
   beadsListRef: React.MutableRefObject<InternalBead[]>;
   onShapeCreated?: (shapeGroup: THREE.Group) => void;
+  onWeldFinished?: () => void;
   currentWidth?: number;
   currentHeight?: number;
   weldHealth?: WeldHealth;
@@ -2190,6 +2212,7 @@ function InteractiveFabricationScene({
         setIsWelding(false);
         stopWeldingSoundLoop();
         playSuccessChime();
+        if (onWeldFinished) onWeldFinished();
         return;
       }
 
@@ -2632,13 +2655,20 @@ export default function FabricationForgeView({
   onBack,
   onPathConfirmed,
   onShapeCreated,
+  initialPhase = 'draw',
+  initialPoints,
+  initialWeldNodes,
+  hideStageControls = false,
+  onWeldComplete,
 }: FabricationForgeProps) {
-  const [points, setPoints] = useState<THREE.Vector3[]>([]);
+  const [points, setPoints] = useState<THREE.Vector3[]>(initialPoints ?? []);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [phase, setPhase] = useState<'draw' | 'smelt' | 'done' | 'plan_path' | 'execute'>('draw');
-  const [cameraMode, setCameraMode] = useState<'isometric' | 'top' | 'front'>('top');
+  const [phase, setPhase] = useState<'draw' | 'smelt' | 'done' | 'plan_path' | 'execute'>(initialPhase);
+  const [cameraMode, setCameraMode] = useState<'isometric' | 'top' | 'front'>(
+    initialPhase === 'draw' ? 'top' : 'isometric'
+  );
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
-  const [weldNodes, setWeldNodes] = useState<THREE.Vector3[]>([]);
+  const [weldNodes, setWeldNodes] = useState<THREE.Vector3[]>(initialWeldNodes ?? []);
   const [smeltProgress, setSmeltProgress] = useState(0);
 
   // Persistent Beads mutable list ref at parent level so beads NEVER disappear after weld completes
@@ -2759,18 +2789,37 @@ export default function FabricationForgeView({
 
   const handleReset = () => {
     playClickSound();
-    setPoints([]);
+    setPoints(initialPoints ?? []);
     setIsDrawing(false);
-    setPhase('draw');
+    setPhase(initialPhase);
     smeltTimeRef.current = 0;
     setSmeltProgress(0);
     setSelectedTemplate(null);
-    setCameraMode('top');
-    setWeldNodes([]);
+    setCameraMode(initialPhase === 'draw' ? 'top' : 'isometric');
+    setWeldNodes(initialWeldNodes ?? []);
     setIsWelding(false);
     beadsListRef.current = [];
     setBeadCount(0);
   };
+
+  // Aggregate bead health into a pass/fail report for the campaign LevelManager.
+  const handleWeldFinished = useCallback(() => {
+    if (!onWeldComplete) return;
+    const beads = beadsListRef.current;
+    const healthBreakdown: Record<string, number> = {};
+    let good = 0;
+    beads.forEach((b) => {
+      const health = b.health || 'perfect';
+      healthBreakdown[health] = (healthBreakdown[health] || 0) + 1;
+      if (health === 'perfect') good += 1;
+    });
+    onWeldComplete({
+      beadCount: beads.length,
+      goodBeadCount: good,
+      goodPercentage: beads.length > 0 ? good / beads.length : 0,
+      healthBreakdown,
+    });
+  }, [onWeldComplete]);
 
   const handleSmelt = () => {
     if (points.length < 3) return;
@@ -3079,7 +3128,7 @@ export default function FabricationForgeView({
                 </div>
               )}
 
-              {phase === 'plan_path' && (
+              {phase === 'plan_path' && !hideStageControls && (
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setWeldNodes([])}
@@ -3186,6 +3235,7 @@ export default function FabricationForgeView({
             weldSettings={weldSettings}
             beadsListRef={beadsListRef}
             onShapeCreated={onShapeCreated}
+            onWeldFinished={handleWeldFinished}
             currentWidth={currentWidth}
             currentHeight={currentHeight}
             weldHealth={weldHealth}
@@ -3600,7 +3650,7 @@ export default function FabricationForgeView({
             )}
 
             {/* STAGE 1 & 2 CONTROLS */}
-            {phase !== 'execute' && (
+            {phase !== 'execute' && !hideStageControls && (
               <div className="flex flex-col sm:flex-row flex-wrap items-start sm:items-center justify-between gap-3 text-xs">
                 {/* Preset Templates */}
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2">

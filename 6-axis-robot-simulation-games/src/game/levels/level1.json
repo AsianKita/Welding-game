@@ -1,0 +1,132 @@
+{
+  "id": "level1",
+  "title": "Level 1 - The Thingy Jiggy",
+  "maxHp": 3,
+  "portraits": {
+    "pops": {
+      "name": "Pops",
+      "image": "",
+      "color": "#f59e0b"
+    },
+    "player": {
+      "name": "Rookie",
+      "image": "",
+      "color": "#38bdf8"
+    }
+  },
+  "dialogue": {
+    "intro": [
+      {
+        "speaker": "pops",
+        "text": "Alright rookie, I need a thingy jiggy. Put these two pieces together, tack 'em, and weld 'em. Don't waste my wire."
+      }
+    ],
+    "assemblyHint": [
+      {
+        "speaker": "pops",
+        "text": "Drag the plate around, spin it with the arrows. Line it up like the print says."
+      }
+    ],
+    "incorrectAssembly": [
+      {
+        "speaker": "pops",
+        "text": "That's crooked as a dog's hind leg. Line it up again before I lose my patience."
+      }
+    ],
+    "tackingHint": [
+      {
+        "speaker": "pops",
+        "text": "Two tacks on the corners. Little ones. We ain't building a battleship."
+      }
+    ],
+    "missedTack": [
+      {
+        "speaker": "pops",
+        "text": "You strike an arc before tacking and that joint'll walk right off the table. Tack it first!"
+      }
+    ],
+    "grindingHint": [
+      {
+        "speaker": "pops",
+        "text": "Clean the joint. Grinder's the only tool that makes a bad welder look good."
+      }
+    ],
+    "skippedGrind": [
+      {
+        "speaker": "pops",
+        "text": "Welding over mill scale? Grind that seam clean, rookie."
+      }
+    ],
+    "executionHint": [
+      {
+        "speaker": "pops",
+        "text": "Dial in your volts and wire, then run that bead nice and steady."
+      }
+    ],
+    "badWeld": [
+      {
+        "speaker": "pops",
+        "text": "That bead looks like a chicken scratched it. Grind it out and do it again."
+      }
+    ],
+    "success": [
+      {
+        "speaker": "pops",
+        "text": "Huh. Ain't half bad. Don't let it go to your head, rookie."
+      }
+    ],
+    "levelFailed": [
+      {
+        "speaker": "pops",
+        "text": "Go home. Come back when you've grown some thicker skin."
+      }
+    ]
+  },
+  "parts": [
+    {
+      "id": "plate_a",
+      "label": "Base Plate",
+      "size": [0.9, 0.06, 0.32],
+      "color": "#64748b",
+      "spawnPosition": [-0.65, 0.0, 0.35],
+      "spawnRotationDeg": 0,
+      "anchor": true
+    },
+    {
+      "id": "plate_b",
+      "label": "Web Plate",
+      "size": [0.7, 0.06, 0.28],
+      "color": "#94a3b8",
+      "spawnPosition": [0.7, 0.0, -0.4],
+      "spawnRotationDeg": 35
+    }
+  ],
+  "targets": [
+    {
+      "partId": "plate_b",
+      "offset": [0.8, 0.0, 0.0],
+      "rotationDeg": 90
+    }
+  ],
+  "tolerance": {
+    "position": 0.12,
+    "rotationDeg": 10
+  },
+  "tackPoints": [
+    { "id": "tack_start", "local": [0.45, 0.04, -0.14], "radius": 0.07 },
+    { "id": "tack_end", "local": [0.45, 0.04, 0.14], "radius": 0.07 }
+  ],
+  "grinding": {
+    "durationSeconds": 3,
+    "requiredProgress": 1
+  },
+  "metrics": {
+    "minGoodWeldPercentage": 0.5,
+    "minBeadCount": 8
+  },
+  "weldPathLocal": [
+    [0.45, 0.04, -0.14],
+    [0.45, 0.04, 0.0],
+    [0.45, 0.04, 0.14]
+  ]
+}

@@ -36,11 +36,12 @@ import SortingGame from "./SortingGame";
 import StackingGame from "./StackingGame";
 import TeachPendant from "./TeachPendant";
 import FabricationForge from "./FabricationForge";
+import LevelManager from "../src/game/components/LevelManager";
 
 const ROTATION_STEP = 0.04;
 const GRAB_DISTANCE = 0.45;
 
-export type GameMode = "hub" | "sandbox" | "sorting" | "stacking" | "fabrication";
+export type GameMode = "hub" | "sandbox" | "sorting" | "stacking" | "fabrication" | "campaign";
 type ControlTab = "jog" | "sliders" | "presets" | "teach";
 type CameraPreset = "orbit" | "top" | "side" | "front";
 
@@ -361,6 +362,21 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
               <h2 className="text-lg font-bold text-slate-200 mb-1">Fabrication Forge</h2>
               <p className="text-sm text-slate-400">Advanced 3-stage metal welding simulation. Smelt, plan paths, and execute welds.</p>
             </button>
+
+            {/* Campaign Card: Story levels with Pops */}
+            <button
+              onClick={() => {
+                playClickSound();
+                setGameMode("campaign");
+              }}
+              className="flex flex-col items-start p-6 rounded-2xl bg-slate-900/50 hover:bg-slate-800 border border-slate-800 hover:border-orange-500/50 transition-all text-left group cursor-pointer relative overflow-hidden"
+            >
+              <div className="p-3 rounded-xl bg-orange-500/20 text-orange-400 mb-4 group-hover:scale-110 transition-transform">
+                <Flame size={24} />
+              </div>
+              <h2 className="text-lg font-bold text-slate-200 mb-1">Shop Floor Campaign</h2>
+              <p className="text-sm text-slate-400">Level 1: assemble, tack, grind and weld a thingy jiggy before Pops loses his temper.</p>
+            </button>
           </div>
           
           {/* Mute Button on Hub */}
@@ -399,6 +415,13 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
               console.log('Stage 2 path confirmed:', { shape, weldPath });
             }}
           />
+        </ErrorBoundary>
+      )}
+
+      {/* Mode 5: Story Campaign Levels */}
+      {gameMode === "campaign" && (
+        <ErrorBoundary fallbackTitle="Shop Floor Campaign" onReset={() => setGameMode("hub")}>
+          <LevelManager levelId="level1" onBack={() => setGameMode("hub")} />
         </ErrorBoundary>
       )}
 
