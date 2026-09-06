@@ -88,8 +88,8 @@
       "label": "Base Plate",
       "size": [
         0.9,
-        0.06,
-        0.32
+        0.05,
+        0.3
       ],
       "color": "#64748b",
       "spawnPosition": [
@@ -109,8 +109,8 @@
       "label": "Web Plate",
       "size": [
         0.7,
-        0.06,
-        0.28
+        0.05,
+        0.3
       ],
       "color": "#94a3b8",
       "spawnPosition": [
@@ -120,7 +120,7 @@
       ],
       "spawnRotationDeg": [
         0,
-        35,
+        40,
         0
       ]
     }
@@ -141,16 +141,16 @@
     }
   ],
   "tolerance": {
-    "position": 0.12,
-    "rotationDeg": 12
+    "position": 0.03,
+    "rotationDeg": 5
   },
   "tackPoints": [
     {
       "id": "tack_start",
       "local": [
         0.45,
-        0.04,
-        -0.14
+        0.05,
+        -0.15
       ],
       "radius": 0.07
     },
@@ -158,8 +158,8 @@
       "id": "tack_end",
       "local": [
         0.45,
-        0.04,
-        0.14
+        0.05,
+        0.15
       ],
       "radius": 0.07
     }
@@ -175,18 +175,22 @@
   "weldPathLocal": [
     [
       0.45,
-      0.04,
-      -0.14
+      0.05,
+      -0.15
     ],
     [
       0.45,
-      0.04,
+      0.05,
       0.0
     ],
     [
       0.45,
-      0.04,
-      0.14
+      0.05,
+      0.15
     ]
-  ]
+  ],
+  "grid": {
+    "unitCm": 5,
+    "rotationDeg": 5
+  }
 }

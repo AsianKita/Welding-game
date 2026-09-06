@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, ThreeEvent, useFrame, useThree } from '@react-three/fiber';
 import { Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { CameraPreset, PartConfig, PartTransform, Vec3 } from '../types';
+import { CameraPreset, GridConfig, PartConfig, PartTransform, TransformSpace, Vec3 } from '../types';
+import { DEFAULT_GRID, snapPosition, snapToNearestEdge } from '../levelStore';
 
 /** Imperative handle exposed by drei's OrbitControls. */
 type OrbitControlsHandle = React.ComponentRef<typeof OrbitControls>;
@@ -47,6 +48,10 @@ export interface PartsWorkbenchProps {
   /** Debug weld-path authoring: click a part surface to drop a weld node. */
   weldAuthoring?: boolean;
   onAuthorWeldNode?: (world: Vec3) => void;
+  /** Discrete unit grid that drag positions snap to. */
+  grid?: GridConfig;
+  /** Drives the gizmo orientation so it matches the control pad's space. */
+  space?: TransformSpace;
 }
 
 function rotationRadians(t: PartTransform): [number, number, number] {
@@ -154,6 +159,81 @@ function PartMesh({
         <edgesGeometry args={[new THREE.BoxGeometry(...part.size)]} />
         <lineBasicMaterial color={selected ? '#f59e0b' : '#0f172a'} />
       </lineSegments>
+    </group>
+  );
+}
+
+/**
+ * Fusion-style transform gizmo pinned to the selected part.
+ *
+ * Three orthogonal RGB arrows (X red, Y green, Z blue) show which way the Move
+ * buttons push, and three matching rings show which way the Rotate buttons
+ * spin. It is a read-only reference marker - all actual editing happens through
+ * the control pad and drag - so it never steals pointer events.
+ */
+function TransformGizmo({
+  part,
+  transform,
+  space,
+}: {
+  part: PartConfig;
+  transform: PartTransform;
+  space: TransformSpace;
+}) {
+  const axes: { dir: Vec3; color: string; ring: [number, number, number] }[] = [
+    { dir: [1, 0, 0], color: '#ef4444', ring: [0, Math.PI / 2, 0] },
+    { dir: [0, 1, 0], color: '#22c55e', ring: [Math.PI / 2, 0, 0] },
+    { dir: [0, 0, 1], color: '#3b82f6', ring: [0, 0, 0] },
+  ];
+  // Scale the marker to the part so it stays readable on any plate size.
+  const reach = Math.max(...part.size) * 0.75 + 0.12;
+
+  return (
+    <group
+      position={[
+        transform.position[0],
+        transform.position[1] + part.size[1] / 2,
+        transform.position[2],
+      ]}
+      // In Perp mode the gizmo follows the part, matching what the buttons do.
+      rotation={space === 'local' ? rotationRadians(transform) : [0, 0, 0]}
+      raycast={() => null}
+    >
+      {/* Rotation rings, one per axis. */}
+      {axes.map(({ color, ring }, i) => (
+        <mesh key={`ring-${i}`} rotation={ring} raycast={() => null}>
+          <torusGeometry args={[reach * 0.62, 0.006, 8, 48]} />
+          <meshBasicMaterial color={color} transparent opacity={0.5} />
+        </mesh>
+      ))}
+
+      {/* Orthogonal arrows: shaft + cone head, mirrored on the negative side. */}
+      {axes.map(({ dir, color }, i) =>
+        [1, -1].map((sign) => {
+          const v = new THREE.Vector3(dir[0], dir[1], dir[2]).multiplyScalar(sign);
+          const quat = new THREE.Quaternion().setFromUnitVectors(
+            new THREE.Vector3(0, 1, 0),
+            v
+          );
+          const rot = new THREE.Euler().setFromQuaternion(quat);
+          return (
+            <group
+              key={`arrow-${i}-${sign}`}
+              rotation={[rot.x, rot.y, rot.z]}
+              raycast={() => null}
+            >
+              <mesh position={[0, reach * 0.5, 0]} raycast={() => null}>
+                <cylinderGeometry args={[0.006, 0.006, reach, 8]} />
+                <meshBasicMaterial color={color} transparent opacity={0.9} />
+              </mesh>
+              <mesh position={[0, reach, 0]} raycast={() => null}>
+                <coneGeometry args={[0.026, 0.07, 12]} />
+                <meshBasicMaterial color={color} />
+              </mesh>
+            </group>
+          );
+        })
+      )}
     </group>
   );
 }
@@ -422,6 +502,8 @@ function SceneContents({
   aligned = false,
   weldAuthoring = false,
   onAuthorWeldNode,
+  grid = DEFAULT_GRID,
+  space = 'world',
   onInteractingChange,
 }: PartsWorkbenchProps & { onInteractingChange: (v: boolean) => void }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -457,7 +539,10 @@ function SceneContents({
       if (!t) return;
       // Drag in the table plane only; height is handled by the Y buttons so a
       // single pointer gesture can never scramble all three axes at once.
-      onDrag(draggingId, [e.point.x, t.position[1], e.point.z]);
+      // Snapping to the grid keeps dragged positions on whole unit values, the
+      // same values the +/- buttons produce.
+      const snapped = snapPosition([e.point.x, t.position[1], e.point.z], grid);
+      onDrag(draggingId, [snapped[0], t.position[1], snapped[2]]);
       return;
     }
 
@@ -519,7 +604,12 @@ function SceneContents({
             onSelect={() => onSelect(part.id)}
             onDragStart={() => setDraggingId(part.id)}
             onSurfaceClick={
-              weldAuthoring && onAuthorWeldNode ? onAuthorWeldNode : undefined
+              weldAuthoring && onAuthorWeldNode
+                ? (world) =>
+                    // Weld joints live on edges, and nobody can click an edge
+                    // pixel-perfectly, so pull the click onto the nearest one.
+                    onAuthorWeldNode(snapToNearestEdge(world, part, t, grid))
+                : undefined
             }
           />
         );
@@ -549,6 +639,15 @@ function SceneContents({
       {tackPoints.map((tp) => (
         <TackHitbox key={tp.id} point={tp} onTack={onTack} />
       ))}
+
+      {/* Reference marker for the selected part, only while it is editable. */}
+      {(() => {
+        if (!selectedId || !draggableIds.includes(selectedId)) return null;
+        const part = parts.find((p) => p.id === selectedId);
+        const t = transforms[selectedId];
+        if (!part || !t) return null;
+        return <TransformGizmo part={part} transform={t} space={space} />;
+      })()}
 
       {grinding && <AngleGrinder position={grinderPos} active={grindingNow} />}
     </group>

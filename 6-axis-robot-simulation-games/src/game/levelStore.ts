@@ -2,12 +2,58 @@ import * as THREE from 'three';
 import level1 from './levels/level1.json';
 import {
   AlignmentTolerance,
+  GridConfig,
   LevelConfig,
   PartTransform,
   RelativeTargetConfig,
   TransformSpace,
   Vec3,
 } from './types';
+
+/**
+ * Fallback authoring grid: 5 cm translation cells and 5 degree rotation steps.
+ * Snapping every transform to this grid is what keeps positions and angles on
+ * whole-number unit values, which in turn makes the authored target and the
+ * player's arrangement compare exactly instead of drifting by float noise.
+ */
+export const DEFAULT_GRID: GridConfig = { unitCm: 5, rotationDeg: 5 };
+
+/** Snaps a scalar (metres) to the nearest whole grid unit. */
+export function snapScalar(value: number, unitCm: number): number {
+  const unit = unitCm / 100;
+  if (unit <= 0) return round(value);
+  return round(Math.round(value / unit) * unit);
+}
+
+/** Snaps a world position onto the grid. */
+export function snapPosition(position: Vec3, grid: GridConfig): Vec3 {
+  return [
+    snapScalar(position[0], grid.unitCm),
+    snapScalar(position[1], grid.unitCm),
+    snapScalar(position[2], grid.unitCm),
+  ];
+}
+
+/** Snaps Euler degrees to the nearest whole rotation step. */
+export function snapRotation(rotation: Vec3, grid: GridConfig): Vec3 {
+  const step = grid.rotationDeg > 0 ? grid.rotationDeg : 1;
+  return [
+    normalizeDeg(Math.round(rotation[0] / step) * step),
+    normalizeDeg(Math.round(rotation[1] / step) * step),
+    normalizeDeg(Math.round(rotation[2] / step) * step),
+  ];
+}
+
+/** Snaps a whole transform onto the grid. */
+export function snapTransform(
+  transform: PartTransform,
+  grid: GridConfig
+): PartTransform {
+  return {
+    position: snapPosition(transform.position, grid),
+    rotation: snapRotation(transform.rotation, grid),
+  };
+}
 
 /**
  * Level registry. Adding a level is a matter of dropping a JSON file next to
@@ -218,15 +264,22 @@ export function evaluateAlignment(
 /** Snaps the follower exactly onto the authored target once it is close enough. */
 export function snapToTarget(
   anchor: PartTransform,
-  target: RelativeTargetConfig
+  target: RelativeTargetConfig,
+  grid: GridConfig = DEFAULT_GRID
 ): PartTransform {
   const quat = quatFromDegrees(anchor.rotation).multiply(
     quatFromDegrees(toEulerDegrees(target.rotationDeg))
   );
-  return {
-    position: toWorld(anchor, target.offset),
-    rotation: degreesFromQuat(quat),
-  };
+  // Snap the resolved target too: the ghost and the player's part must be able
+  // to land on exactly the same grid point, otherwise the wireframe reads as
+  // permanently offset by a fraction of a unit.
+  return snapTransform(
+    {
+      position: toWorld(anchor, target.offset),
+      rotation: degreesFromQuat(quat),
+    },
+    grid
+  );
 }
 
 /**
@@ -238,7 +291,8 @@ export function translate(
   transform: PartTransform,
   axis: 0 | 1 | 2,
   amount: number,
-  space: TransformSpace
+  space: TransformSpace,
+  grid: GridConfig = DEFAULT_GRID
 ): PartTransform {
   const dir = new THREE.Vector3(
     axis === 0 ? 1 : 0,
@@ -251,11 +305,14 @@ export function translate(
   dir.multiplyScalar(amount);
   return {
     ...transform,
-    position: [
-      round(transform.position[0] + dir.x),
-      round(transform.position[1] + dir.y),
-      round(transform.position[2] + dir.z),
-    ],
+    position: snapPosition(
+      [
+        transform.position[0] + dir.x,
+        transform.position[1] + dir.y,
+        transform.position[2] + dir.z,
+      ],
+      grid
+    ),
   };
 }
 
@@ -264,7 +321,8 @@ export function rotate(
   transform: PartTransform,
   axis: 0 | 1 | 2,
   deg: number,
-  space: TransformSpace
+  space: TransformSpace,
+  grid: GridConfig = DEFAULT_GRID
 ): PartTransform {
   const current = quatFromDegrees(transform.rotation);
   const axisVec = new THREE.Vector3(
@@ -279,9 +337,62 @@ export function rotate(
     space === 'local'
       ? current.clone().multiply(delta)
       : delta.clone().multiply(current);
-  return { ...transform, rotation: degreesFromQuat(next) };
+  return { ...transform, rotation: snapRotation(degreesFromQuat(next), grid) };
 }
 
 function round(v: number): number {
   return Math.round(v * 1000) / 1000;
+}
+
+/**
+ * Snaps a raw surface click onto the nearest *edge* of a box part.
+ *
+ * Weld joints run along edges, and a player can never click a 1-pixel edge
+ * accurately. The two box axes whose faces are closest to the click are pinned
+ * to that face, which leaves the third axis free - exactly the edge line - and
+ * that free coordinate is then snapped to the grid so authored weld nodes stay
+ * on whole-number units.
+ */
+export function snapToNearestEdge(
+  world: Vec3,
+  part: { size: Vec3 },
+  transform: PartTransform,
+  grid: GridConfig = DEFAULT_GRID
+): Vec3 {
+  const quat = quatFromDegrees(transform.rotation);
+  // Part meshes are drawn lifted by half their height, so the box centre sits
+  // above the stored transform position.
+  const centre = new THREE.Vector3(
+    transform.position[0],
+    transform.position[1] + part.size[1] / 2,
+    transform.position[2]
+  );
+  const local = new THREE.Vector3(world[0], world[1], world[2])
+    .sub(centre)
+    .applyQuaternion(quat.clone().invert());
+
+  const half: Vec3 = [part.size[0] / 2, part.size[1] / 2, part.size[2] / 2];
+  const coords: Vec3 = [local.x, local.y, local.z];
+  // Distance from the click to each pair of faces along that axis.
+  const gaps = coords.map((c, i) => Math.abs(half[i] - Math.abs(c)));
+  const freeAxis = gaps.indexOf(Math.max(...gaps));
+
+  const snapped: Vec3 = [0, 0, 0];
+  for (let i = 0; i < 3; i += 1) {
+    if (i === freeAxis) {
+      // Clamp inside the face before snapping so a node can't fall off the end.
+      const limit = half[i];
+      snapped[i] = Math.max(
+        -limit,
+        Math.min(limit, snapScalar(coords[i], grid.unitCm))
+      );
+    } else {
+      snapped[i] = coords[i] >= 0 ? half[i] : -half[i];
+    }
+  }
+
+  const out = new THREE.Vector3(snapped[0], snapped[1], snapped[2])
+    .applyQuaternion(quat)
+    .add(centre);
+  return [round(out.x), round(out.y), round(out.z)];
 }

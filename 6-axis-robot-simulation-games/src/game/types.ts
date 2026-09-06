@@ -95,6 +95,14 @@ export interface LevelDialogueConfig {
   levelFailed: DialogueLine[];
 }
 
+/** Discrete unit grid so every authored value is a whole number. */
+export interface GridConfig {
+  /** Translation snap in centimetres (scene units are metres). */
+  unitCm: number;
+  /** Rotation snap in whole degrees. */
+  rotationDeg: number;
+}
+
 export interface LevelConfig {
   id: string;
   title: string;
@@ -106,6 +114,8 @@ export interface LevelConfig {
   /** Authored target arrangement, relative to the anchor part. */
   targets: RelativeTargetConfig[];
   tolerance: AlignmentTolerance;
+  /** Discrete authoring grid. Omitted levels fall back to DEFAULT_GRID. */
+  grid?: GridConfig;
   tackPoints: TackPointConfig[];
   grinding: GrindingConfig;
   metrics: WeldMetricsConfig;

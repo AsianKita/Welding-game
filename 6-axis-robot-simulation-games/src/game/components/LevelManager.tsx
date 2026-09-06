@@ -13,13 +13,17 @@ import FabricationForge, {
   WeldCompletionReport,
 } from '../../components/robot/FabricationForge';
 import {
+  DEFAULT_GRID,
   clearOverride,
   evaluateAlignment,
   loadLevel,
   rotate,
   saveTargetOverride,
   saveWeldPathOverride,
+  snapPosition,
+  snapRotation,
   snapToTarget,
+  snapTransform,
   toEulerDegrees,
   toLocal,
   toRelative,
@@ -64,6 +68,8 @@ export interface LevelManagerProps {
 export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const level = useMemo(() => loadLevel(levelId), [levelId, reloadKey]);
+  // Discrete unit grid every transform snaps to, data-driven per level.
+  const grid = useMemo(() => level.grid ?? DEFAULT_GRID, [level]);
 
   const anchorPart = useMemo(
     () => level.parts.find((p) => p.anchor) || level.parts[0],
@@ -77,13 +83,17 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
   const spawnTransforms = useCallback((): Record<string, PartTransform> => {
     const map: Record<string, PartTransform> = {};
     level.parts.forEach((p) => {
-      map[p.id] = {
-        position: [...p.spawnPosition] as Vec3,
-        rotation: toEulerDegrees(p.spawnRotationDeg),
-      };
+      // Spawn on the grid so parts start on whole unit values.
+      map[p.id] = snapTransform(
+        {
+          position: [...p.spawnPosition] as Vec3,
+          rotation: toEulerDegrees(p.spawnRotationDeg),
+        },
+        grid
+      );
     });
     return map;
-  }, [level]);
+  }, [level, grid]);
 
   const [phase, setPhase] = useState<LevelPhase>('intro');
   const [hp, setHp] = useState(level.maxHp);
@@ -95,8 +105,8 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
   );
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('iso');
   const [space, setSpace] = useState<TransformSpace>('world');
-  const [moveStepCm, setMoveStepCm] = useState(5);
-  const [rotateStepDeg, setRotateStepDeg] = useState(15);
+  const [moveStepCm, setMoveStepCm] = useState(10);
+  const [rotateStepDeg, setRotateStepDeg] = useState(10);
   const [debugMode, setDebugMode] = useState(false);
   const [weldAuthoring, setWeldAuthoring] = useState(false);
   const [targets, setTargets] = useState<RelativeTargetConfig[]>(level.targets);
@@ -203,8 +213,11 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     if (phase !== 'assembly' || debugMode || !anchorTransform) return null;
     const target = targets.find((t) => t.partId === followerParts[0]?.id);
     if (!target) return null;
-    return { partId: target.partId, transform: snapToTarget(anchorTransform, target) };
-  }, [phase, debugMode, anchorTransform, targets, followerParts]);
+    return {
+      partId: target.partId,
+      transform: snapToTarget(anchorTransform, target, grid),
+    };
+  }, [phase, debugMode, anchorTransform, targets, followerParts, grid]);
 
   // ------------------------------------------------------------------- world
   const tackPoints: WorkbenchTackPoint[] = useMemo(() => {
@@ -283,10 +296,10 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
       if (!id) return;
       setTransforms((prev) => ({
         ...prev,
-        [id]: translate(prev[id], axis, cm / 100, space),
+        [id]: translate(prev[id], axis, cm / 100, space, grid),
       }));
     },
-    [selectedId, space]
+    [selectedId, space, grid]
   );
 
   /** Rotate by whole degrees about a world or part-local axis. */
@@ -296,10 +309,10 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
       if (!id) return;
       setTransforms((prev) => ({
         ...prev,
-        [id]: rotate(prev[id], axis, deg, space),
+        [id]: rotate(prev[id], axis, deg, space, grid),
       }));
     },
-    [selectedId, space]
+    [selectedId, space, grid]
   );
 
   /** Debug tool: freeze the current arrangement as the level's expected state. */
@@ -307,11 +320,17 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     if (!anchorTransform) return;
     const next = followerParts.map((part) => {
       const rel = toRelative(anchorTransform, transforms[part.id]);
-      return { partId: part.id, offset: rel.offset, rotationDeg: rel.rotationDeg };
+      // Store the target on the grid so authored levels only ever contain
+      // whole unit values, and the ghost lands exactly where a part can go.
+      return {
+        partId: part.id,
+        offset: snapPosition(rel.offset, grid),
+        rotationDeg: snapRotation(rel.rotationDeg, grid),
+      };
     });
     setTargets(next);
     saveTargetOverride(levelId, next);
-  }, [anchorTransform, followerParts, transforms, levelId]);
+  }, [anchorTransform, followerParts, transforms, levelId, grid]);
 
   /** Debug tool: drop a weld node where the designer clicked on a part. */
   const handleAuthorWeldNode = useCallback(
@@ -331,7 +350,7 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     setTransforms((prev) => {
       const next = { ...prev };
       targets.forEach((t) => {
-        next[t.partId] = snapToTarget(anchorTransform, t);
+        next[t.partId] = snapToTarget(anchorTransform, t, grid);
       });
       return next;
     });
@@ -516,6 +535,8 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
             aligned={allAligned && phase !== 'assembly'}
             weldAuthoring={debugMode && weldAuthoring}
             onAuthorWeldNode={handleAuthorWeldNode}
+            grid={grid}
+            space={space}
           />
         )}
 
