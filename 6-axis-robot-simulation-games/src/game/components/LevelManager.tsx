@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { ArrowLeft, Bug, Flame, Hammer, RotateCcw, Wrench } from 'lucide-react';
+import {
+  ArrowLeft,
+  Box,
+  Bug,
+  Flame,
+  Hammer,
+  RotateCcw,
+  Wrench,
+} from 'lucide-react';
 import FabricationForge, {
   WeldCompletionReport,
 } from '../../components/robot/FabricationForge';
@@ -8,26 +16,40 @@ import {
   clearOverride,
   evaluateAlignment,
   loadLevel,
-  normalizeDeg,
-  saveOverride,
+  rotate,
+  saveTargetOverride,
+  saveWeldPathOverride,
   snapToTarget,
+  toEulerDegrees,
+  toLocal,
   toRelative,
   toWorld,
+  translate,
 } from '../levelStore';
 import {
+  CameraPreset,
   DialogueLine,
   LevelPhase,
   PartTransform,
   RelativeTargetConfig,
+  TransformSpace,
   Vec3,
 } from '../types';
 import DialogueBox from './DialogueBox';
 import HardHatHUD from './HardHatHUD';
 import DebugPanel from './DebugPanel';
+import AssemblyControls from './AssemblyControls';
 import PartsWorkbench, { WorkbenchTackPoint } from './PartsWorkbench';
 
 /** Top surface height of the fabrication sim workpiece (see FabricationForge). */
 const FORGE_WORKPIECE_TOP_Y = 0.07;
+
+const CAMERA_BUTTONS: { id: CameraPreset; label: string }[] = [
+  { id: 'iso', label: '3D' },
+  { id: 'top', label: 'Top' },
+  { id: 'front', label: 'Front' },
+  { id: 'side', label: 'Side' },
+];
 
 export interface LevelManagerProps {
   levelId?: string;
@@ -57,7 +79,7 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     level.parts.forEach((p) => {
       map[p.id] = {
         position: [...p.spawnPosition] as Vec3,
-        rotationDeg: p.spawnRotationDeg ?? 0,
+        rotation: toEulerDegrees(p.spawnRotationDeg),
       };
     });
     return map;
@@ -71,8 +93,14 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
   const [selectedId, setSelectedId] = useState<string | null>(
     followerParts[0]?.id ?? null
   );
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset>('iso');
+  const [space, setSpace] = useState<TransformSpace>('world');
+  const [moveStepCm, setMoveStepCm] = useState(5);
+  const [rotateStepDeg, setRotateStepDeg] = useState(15);
   const [debugMode, setDebugMode] = useState(false);
+  const [weldAuthoring, setWeldAuthoring] = useState(false);
   const [targets, setTargets] = useState<RelativeTargetConfig[]>(level.targets);
+  const [weldPathLocal, setWeldPathLocal] = useState<Vec3[]>(level.weldPathLocal);
   const [tackedIds, setTackedIds] = useState<string[]>([]);
   const [grindProgress, setGrindProgress] = useState(0);
   const [introIndex, setIntroIndex] = useState(0);
@@ -90,6 +118,12 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     };
   }, []);
 
+  // Re-seed local authoring state whenever the level config is (re)loaded.
+  useEffect(() => {
+    setTargets(level.targets);
+    setWeldPathLocal(level.weldPathLocal);
+  }, [level]);
+
   const restartLevel = useCallback(() => {
     setPhase('intro');
     setHp(level.maxHp);
@@ -100,6 +134,7 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     setBanter(null);
     setWeldReport(null);
     setPassed(false);
+    setCameraPreset('iso');
   }, [level.maxHp, spawnTransforms]);
 
   /**
@@ -168,8 +203,8 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
 
   const weldPathWorld: Vec3[] = useMemo(() => {
     if (!anchorTransform) return [];
-    return level.weldPathLocal.map((p) => toWorld(anchorTransform, p));
-  }, [level.weldPathLocal, anchorTransform]);
+    return weldPathLocal.map((p) => toWorld(anchorTransform, p));
+  }, [weldPathLocal, anchorTransform]);
 
   /** Workpiece outline handed to the fabrication sim (AABB of the tacked parts). */
   const forgePoints = useMemo(() => {
@@ -178,18 +213,26 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     level.parts.forEach((part) => {
       const t = transforms[part.id];
       if (!t) return;
-      const hx = part.size[0] / 2;
-      const hz = part.size[2] / 2;
-      const rad = (t.rotationDeg * Math.PI) / 180;
-      [
-        [-hx, -hz],
-        [hx, -hz],
-        [hx, hz],
-        [-hx, hz],
-      ].forEach(([cx, cz]) => {
-        xs.push(t.position[0] + cx * Math.cos(rad) + cz * Math.sin(rad));
-        zs.push(t.position[2] - cx * Math.sin(rad) + cz * Math.cos(rad));
-      });
+      const half = new THREE.Vector3(part.size[0] / 2, part.size[1] / 2, part.size[2] / 2);
+      const quat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          THREE.MathUtils.degToRad(t.rotation[0]),
+          THREE.MathUtils.degToRad(t.rotation[1]),
+          THREE.MathUtils.degToRad(t.rotation[2]),
+          'XYZ'
+        )
+      );
+      [-1, 1].forEach((sx) =>
+        [-1, 1].forEach((sy) =>
+          [-1, 1].forEach((sz) => {
+            const corner = new THREE.Vector3(half.x * sx, half.y * sy, half.z * sz)
+              .applyQuaternion(quat)
+              .add(new THREE.Vector3(...t.position));
+            xs.push(corner.x);
+            zs.push(corner.z);
+          })
+        )
+      );
     });
     if (xs.length === 0) return [];
     const minX = Math.min(...xs);
@@ -217,19 +260,30 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     setTransforms((prev) => ({ ...prev, [id]: { ...prev[id], position } }));
   }, []);
 
-  const handleRotate = useCallback(
-    (delta: number) => {
+  /** Nudge in whole centimetres along a world or part-local axis. */
+  const handleNudge = useCallback(
+    (axis: 0 | 1 | 2, cm: number) => {
       const id = selectedId;
       if (!id) return;
       setTransforms((prev) => ({
         ...prev,
-        [id]: {
-          ...prev[id],
-          rotationDeg: normalizeDeg(prev[id].rotationDeg + delta),
-        },
+        [id]: translate(prev[id], axis, cm / 100, space),
       }));
     },
-    [selectedId]
+    [selectedId, space]
+  );
+
+  /** Rotate by whole degrees about a world or part-local axis. */
+  const handleRotate = useCallback(
+    (axis: 0 | 1 | 2, deg: number) => {
+      const id = selectedId;
+      if (!id) return;
+      setTransforms((prev) => ({
+        ...prev,
+        [id]: rotate(prev[id], axis, deg, space),
+      }));
+    },
+    [selectedId, space]
   );
 
   /** Debug tool: freeze the current arrangement as the level's expected state. */
@@ -240,8 +294,17 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
       return { partId: part.id, offset: rel.offset, rotationDeg: rel.rotationDeg };
     });
     setTargets(next);
-    saveOverride(levelId, next);
+    saveTargetOverride(levelId, next);
   }, [anchorTransform, followerParts, transforms, levelId]);
+
+  /** Debug tool: drop a weld node where the designer clicked on a part. */
+  const handleAuthorWeldNode = useCallback(
+    (world: Vec3) => {
+      if (!anchorTransform) return;
+      setWeldPathLocal((prev) => [...prev, toLocal(anchorTransform, world)]);
+    },
+    [anchorTransform]
+  );
 
   const handleConfirmAssembly = useCallback(() => {
     if (!allAligned || !anchorTransform) {
@@ -292,7 +355,13 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
       return;
     }
     setPhase('execution');
-  }, [allTacked, grindProgress, level.grinding.requiredProgress, triggerBanter, level.dialogue]);
+  }, [
+    allTacked,
+    grindProgress,
+    level.grinding.requiredProgress,
+    triggerBanter,
+    level.dialogue,
+  ]);
 
   const handleWeldComplete = useCallback(
     (report: WeldCompletionReport) => {
@@ -303,11 +372,10 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
         report.goodPercentage >= level.metrics.minGoodWeldPercentage;
       setPassed(success);
       setPhase('evaluation');
-      if (success) {
-        triggerBanter(level.dialogue.success, false);
-      } else {
-        triggerBanter(level.dialogue.badWeld, true);
-      }
+      triggerBanter(
+        success ? level.dialogue.success : level.dialogue.badWeld,
+        !success
+      );
     },
     [level.metrics, level.dialogue, triggerBanter]
   );
@@ -319,57 +387,87 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
       ? followerParts.map((p) => p.id)
       : [];
 
+  const showControlPad = debugMode || phase === 'assembly';
+
   const activeLine: DialogueLine | null =
     phase === 'intro' ? level.dialogue.intro[introIndex] ?? null : banter?.line ?? null;
 
-  const selectedLabel =
-    level.parts.find((p) => p.id === selectedId)?.label ?? 'None';
+  const selectedTransform = selectedId ? transforms[selectedId] : null;
+  const readout = selectedTransform
+    ? {
+        position: selectedTransform.position
+          .map((v) => `${Math.round(v * 100)}`)
+          .join(', '),
+        rotation: selectedTransform.rotation
+          .map((v) => `${Math.round(v)}°`)
+          .join(', '),
+      }
+    : undefined;
 
   return (
     <div
-      className={`relative flex h-full w-full flex-1 flex-col bg-[#07090e] text-slate-100 ${
-        shake ? 'animate-pulse' : ''
-      }`}
-      style={shake ? { transform: 'translate3d(2px, -2px, 0)' } : undefined}
+      className={`relative flex h-full w-full flex-1 flex-col overflow-hidden bg-[#07090e] text-slate-100`}
+      style={shake ? { transform: 'translate3d(3px, -3px, 0)' } : undefined}
     >
-      {/* Top bar: back, title, hard hats, debug toggle */}
-      <div className="pointer-events-none absolute left-2 right-2 top-2 z-40 flex items-start justify-between gap-2">
-        <div className="pointer-events-auto flex items-center gap-2">
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white"
-              title="Back to hub"
-            >
-              <ArrowLeft size={15} />
-            </button>
-          )}
-          <div className="rounded-xl border border-slate-800 bg-slate-950/85 px-3 py-1.5 text-xs font-bold">
-            {level.title}
-            <span className="ml-2 font-mono text-[10px] uppercase text-amber-400">
-              {phase}
-            </span>
-          </div>
-        </div>
-        <div className="pointer-events-auto flex items-center gap-2">
-          <HardHatHUD hp={hp} maxHp={level.maxHp} />
+      {/* ---------------------------------------------------------- top bar */}
+      <div className="relative z-30 flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-950/95 px-2 py-1.5">
+        {onBack && (
           <button
             type="button"
-            onClick={() => setDebugMode((d) => !d)}
-            className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-[11px] font-bold uppercase tracking-wide ${
-              debugMode
-                ? 'border-fuchsia-500 bg-fuchsia-600/30 text-fuchsia-200'
-                : 'border-slate-800 bg-slate-950/85 text-slate-300 hover:text-white'
-            }`}
+            onClick={onBack}
+            aria-label="Back to hub"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white"
           >
-            <Bug size={14} /> Debug
+            <ArrowLeft size={15} />
           </button>
+        )}
+
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-bold leading-tight">
+            {level.title}
+          </div>
+          <div className="font-mono text-[10px] uppercase leading-tight text-amber-400">
+            {phase}
+          </div>
         </div>
+
+        {/* Camera preset buttons */}
+        <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-slate-900 p-0.5">
+          {CAMERA_BUTTONS.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setCameraPreset(c.id)}
+              className={`min-h-[30px] rounded-md px-2 text-[10px] font-bold transition-colors ${
+                cameraPreset === c.id
+                  ? 'bg-sky-500 text-slate-950'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        <HardHatHUD hp={hp} maxHp={level.maxHp} />
+
+        <button
+          type="button"
+          onClick={() => setDebugMode((d) => !d)}
+          aria-label="Toggle debug mode"
+          className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-[10px] font-bold uppercase ${
+            debugMode
+              ? 'border-fuchsia-500 bg-fuchsia-600/30 text-fuchsia-200'
+              : 'border-slate-800 bg-slate-900 text-slate-300 hover:text-white'
+          }`}
+        >
+          <Bug size={13} />
+          <span className="hidden sm:inline">Debug</span>
+        </button>
       </div>
 
-      {/* Stage viewport */}
-      <div className="relative flex-1">
+      {/* -------------------------------------------------------- viewport */}
+      <div className="relative min-h-0 flex-1">
         {phase === 'execution' ? (
           <FabricationForge
             onBack={onBack}
@@ -387,163 +485,204 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
             selectedId={selectedId}
             onSelect={setSelectedId}
             onDrag={handleDrag}
+            cameraPreset={cameraPreset}
             tackPoints={phase === 'tacking' ? tackPoints : []}
             onTack={handleTack}
             weldPath={
-              phase === 'tacking' || phase === 'grinding' ? weldPathWorld : []
+              phase === 'tacking' || phase === 'grinding' || weldAuthoring
+                ? weldPathWorld
+                : []
             }
             ghost={ghost}
             grinding={phase === 'grinding'}
             onGrind={handleGrind}
+            grindProgress={grindProgress}
             aligned={allAligned && phase !== 'assembly'}
+            weldAuthoring={debugMode && weldAuthoring}
+            onAuthorWeldNode={handleAuthorWeldNode}
           />
         )}
-      </div>
 
-      {/* Debug authoring panel */}
-      {debugMode && phase !== 'execution' && (
-        <div className="absolute right-2 top-16 z-40">
-          <DebugPanel
-            levelId={levelId}
-            targets={targets}
-            tolerance={level.tolerance}
-            selectedLabel={selectedLabel}
-            onRotate={handleRotate}
-            onSaveTargetState={handleSaveTargetState}
-            onResetParts={() => setTransforms(spawnTransforms())}
-            onClearOverride={() => {
-              clearOverride(levelId);
-              setReloadKey((k) => k + 1);
-              setTargets(loadLevel(levelId).targets);
-            }}
-          />
-        </div>
-      )}
-
-      {/* Bottom stage controls & dialogue */}
-      <div className="pointer-events-none absolute bottom-3 left-0 right-0 z-40 flex flex-col items-center gap-3 px-3">
+        {/* Floating dialogue sits above the viewport, clear of the docks. */}
         {activeLine && (
-          <DialogueBox
-            line={activeLine}
-            portraits={level.portraits}
-            angry={banter?.angry && phase !== 'intro'}
-            onAdvance={
-              phase === 'intro'
-                ? () => {
-                    if (introIndex + 1 < level.dialogue.intro.length) {
-                      setIntroIndex(introIndex + 1);
-                    } else {
-                      setPhase('assembly');
-                      if (level.dialogue.assemblyHint) {
-                        triggerBanter(level.dialogue.assemblyHint, false);
+          <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center px-2">
+            <DialogueBox
+              line={activeLine}
+              portraits={level.portraits}
+              angry={Boolean(banter?.angry) && phase !== 'intro'}
+              onAdvance={
+                phase === 'intro'
+                  ? () => {
+                      if (introIndex + 1 < level.dialogue.intro.length) {
+                        setIntroIndex(introIndex + 1);
+                      } else {
+                        setPhase('assembly');
+                        if (level.dialogue.assemblyHint) {
+                          triggerBanter(level.dialogue.assemblyHint, false);
+                        }
                       }
                     }
-                  }
-                : undefined
-            }
-            advanceLabel={
-              introIndex + 1 < level.dialogue.intro.length ? 'Next' : "Let's work"
-            }
-          />
+                  : undefined
+              }
+              advanceLabel={
+                introIndex + 1 < level.dialogue.intro.length ? 'Next' : "Let's work"
+              }
+            />
+          </div>
         )}
 
-        {phase === 'assembly' && !debugMode && (
-          <StageBar>
-            <span className="text-[11px] text-slate-400">
-              Drag the plate, rotate with the buttons, match the ghost outline.
-            </span>
-            <RotateButtons onRotate={handleRotate} />
-            <ActionButton onClick={handleConfirmAssembly} icon={<Hammer size={14} />}>
-              Ready to Tack
-            </ActionButton>
-          </StageBar>
-        )}
-
-        {phase === 'tacking' && (
-          <StageBar>
-            <span className="text-[11px] text-slate-400">
-              Tacks: {tackedIds.length}/{level.tackPoints.length}
-            </span>
-            <ActionButton onClick={handleStartGrinding} icon={<Wrench size={14} />}>
-              Grind the Joint
-            </ActionButton>
-            <ActionButton onClick={handleStartExecution} icon={<Flame size={14} />}>
-              Strike an Arc
-            </ActionButton>
-          </StageBar>
-        )}
-
-        {phase === 'grinding' && (
-          <StageBar>
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-slate-400">Prep Progress</span>
-              <div className="h-2 w-40 overflow-hidden rounded-full bg-slate-800">
-                <div
-                  className="h-full bg-cyan-400 transition-[width]"
-                  style={{ width: `${Math.round(grindProgress * 100)}%` }}
-                />
-              </div>
-              <span className="font-mono text-[11px] text-cyan-300">
-                {Math.round(grindProgress * 100)}%
-              </span>
-            </div>
-            <ActionButton onClick={handleStartExecution} icon={<Flame size={14} />}>
-              Strike an Arc
-            </ActionButton>
-          </StageBar>
-        )}
-
-        {(phase === 'evaluation' || phase === 'failed') && (
-          <StageBar>
-            <span
-              className={`text-xs font-bold uppercase tracking-widest ${
-                phase === 'failed' || !passed ? 'text-red-400' : 'text-emerald-400'
-              }`}
-            >
-              {phase === 'failed'
-                ? 'Level Failed'
-                : passed
-                  ? 'Level Complete'
-                  : 'Weld Rejected'}
-            </span>
-            {weldReport && (
-              <span className="font-mono text-[11px] text-slate-400">
-                {Math.round(weldReport.goodPercentage * 100)}% good /{' '}
-                {weldReport.beadCount} beads (need{' '}
-                {Math.round(level.metrics.minGoodWeldPercentage * 100)}%)
-              </span>
-            )}
-            <ActionButton onClick={restartLevel} icon={<RotateCcw size={14} />}>
-              {passed ? 'Replay Level' : 'Restart Level'}
-            </ActionButton>
-          </StageBar>
+        {/* Debug authoring panel floats over the viewport, below the top bar. */}
+        {debugMode && phase !== 'execution' && (
+          <div className="absolute right-2 top-2 z-30">
+            <DebugPanel
+              levelId={levelId}
+              targets={targets}
+              tolerance={level.tolerance}
+              weldPathLocal={weldPathLocal}
+              weldAuthoring={weldAuthoring}
+              onToggleWeldAuthoring={() => setWeldAuthoring((w) => !w)}
+              onUndoWeldNode={() => setWeldPathLocal((p) => p.slice(0, -1))}
+              onClearWeldPath={() => setWeldPathLocal([])}
+              onSaveTargetState={handleSaveTargetState}
+              onSaveWeldPath={() => saveWeldPathOverride(levelId, weldPathLocal)}
+              onResetParts={() => setTransforms(spawnTransforms())}
+              onClearOverride={() => {
+                clearOverride(levelId);
+                setReloadKey((k) => k + 1);
+              }}
+              onClose={() => setDebugMode(false)}
+            />
+          </div>
         )}
       </div>
+
+      {/* ------------------------------------------------------ bottom dock */}
+      {phase !== 'execution' && (
+        <div className="relative z-30 shrink-0 space-y-2 border-t border-slate-800 bg-slate-950/95 p-2">
+          {showControlPad && (
+            <AssemblyControls
+              parts={debugMode ? level.parts : followerParts}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onNudge={handleNudge}
+              onRotate={handleRotate}
+              space={space}
+              onSpaceChange={setSpace}
+              moveStepCm={moveStepCm}
+              onMoveStepChange={setMoveStepCm}
+              rotateStepDeg={rotateStepDeg}
+              onRotateStepChange={setRotateStepDeg}
+              readout={readout}
+            />
+          )}
+
+          {phase === 'assembly' && (
+            <StageBar>
+              <AlignmentReadout
+                aligned={allAligned}
+                error={alignment[0]}
+                tolerance={level.tolerance}
+              />
+              <ActionButton onClick={handleConfirmAssembly} icon={<Hammer size={14} />}>
+                Ready to Tack
+              </ActionButton>
+            </StageBar>
+          )}
+
+          {phase === 'tacking' && (
+            <StageBar>
+              <span className="text-[11px] text-slate-400">
+                Tap the glowing corners · Tacks {tackedIds.length}/
+                {level.tackPoints.length}
+              </span>
+              <ActionButton onClick={handleStartGrinding} icon={<Wrench size={14} />}>
+                Grind the Joint
+              </ActionButton>
+              <ActionButton onClick={handleStartExecution} icon={<Flame size={14} />}>
+                Strike an Arc
+              </ActionButton>
+            </StageBar>
+          )}
+
+          {phase === 'grinding' && (
+            <StageBar>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="shrink-0 text-[11px] text-slate-400">Prep</span>
+                <div className="h-2 w-24 shrink-0 overflow-hidden rounded-full bg-slate-800 sm:w-40">
+                  <div
+                    className="h-full bg-cyan-400 transition-[width]"
+                    style={{ width: `${Math.round(grindProgress * 100)}%` }}
+                  />
+                </div>
+                <span className="shrink-0 font-mono text-[11px] text-cyan-300">
+                  {Math.round(grindProgress * 100)}%
+                </span>
+              </div>
+              <ActionButton onClick={handleStartExecution} icon={<Flame size={14} />}>
+                Strike an Arc
+              </ActionButton>
+            </StageBar>
+          )}
+
+          {(phase === 'evaluation' || phase === 'failed') && (
+            <StageBar>
+              <span
+                className={`text-xs font-bold uppercase tracking-widest ${
+                  phase === 'failed' || !passed ? 'text-red-400' : 'text-emerald-400'
+                }`}
+              >
+                {phase === 'failed'
+                  ? 'Level Failed'
+                  : passed
+                    ? 'Level Complete'
+                    : 'Weld Rejected'}
+              </span>
+              {weldReport && (
+                <span className="font-mono text-[11px] text-slate-400">
+                  {Math.round(weldReport.goodPercentage * 100)}% good /{' '}
+                  {weldReport.beadCount} beads (need{' '}
+                  {Math.round(level.metrics.minGoodWeldPercentage * 100)}%)
+                </span>
+              )}
+              <ActionButton onClick={restartLevel} icon={<RotateCcw size={14} />}>
+                {passed ? 'Replay' : 'Restart'}
+              </ActionButton>
+            </StageBar>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AlignmentReadout({
+  aligned,
+  error,
+  tolerance,
+}: {
+  aligned: boolean;
+  error?: { positionError: number; rotationError: number };
+  tolerance: { position: number; rotationDeg: number };
+}) {
+  if (!error) return null;
+  return (
+    <div className="flex items-center gap-2 font-mono text-[11px]">
+      <Box size={13} className={aligned ? 'text-emerald-400' : 'text-slate-500'} />
+      <span className={aligned ? 'text-emerald-400' : 'text-slate-400'}>
+        off {Math.round(error.positionError * 100)}cm /{' '}
+        {Math.round(error.rotationError)}°
+      </span>
+      <span className="hidden text-slate-600 sm:inline">
+        (need ≤{Math.round(tolerance.position * 100)}cm / {tolerance.rotationDeg}°)
+      </span>
     </div>
   );
 }
 
 function StageBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/90 px-4 py-2.5 shadow-2xl backdrop-blur">
+    <div className="flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2 sm:gap-3">
       {children}
-    </div>
-  );
-}
-
-function RotateButtons({ onRotate }: { onRotate: (d: number) => void }) {
-  return (
-    <div className="flex items-center gap-1">
-      {[-45, -15, 15, 45].map((d) => (
-        <button
-          key={d}
-          type="button"
-          onClick={() => onRotate(d)}
-          className="rounded-md bg-slate-800 px-2 py-1 text-[11px] font-bold hover:bg-slate-700"
-        >
-          {d > 0 ? `+${d}°` : `${d}°`}
-        </button>
-      ))}
     </div>
   );
 }
@@ -561,7 +700,7 @@ function ActionButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-1.5 text-xs font-bold uppercase tracking-wide text-slate-950 hover:bg-amber-400"
+      className="flex min-h-[38px] items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 text-xs font-bold uppercase tracking-wide text-slate-950 hover:bg-amber-400 active:bg-amber-300"
     >
       {icon}
       {children}

@@ -245,7 +245,7 @@ export default function RobotScene({ initialMode = "hub" }: RobotSceneProps) {
   return (
     <div className="flex flex-col flex-1 w-full h-full bg-[#0a0a0f] text-white select-none relative">
       {/* Universal Minimalist Floating Header */}
-      {gameMode !== 'hub' && gameMode !== 'fabrication' && (
+      {gameMode !== 'hub' && gameMode !== 'fabrication' && gameMode !== 'campaign' && (
         <header className="absolute top-2 left-2 right-2 z-50 flex items-center justify-between pointer-events-none">
           {/* Left Side: Home Button */}
           <div className="pointer-events-auto flex items-center gap-1 bg-slate-950/80 backdrop-blur-md p-1 rounded-xl border border-slate-800 shadow-xl">

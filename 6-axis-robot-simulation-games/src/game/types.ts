@@ -32,8 +32,8 @@ export interface PartConfig {
   color?: string;
   /** Where the part spawns on the welding table. */
   spawnPosition: Vec3;
-  /** Spawn rotation in degrees (Y axis). */
-  spawnRotationDeg?: number;
+  /** Spawn rotation in degrees. Either a single Y angle or a full [x, y, z]. */
+  spawnRotationDeg?: number | Vec3;
   /** When true the part is the anchor that the others are measured against. */
   anchor?: boolean;
 }
@@ -46,8 +46,11 @@ export interface RelativeTargetConfig {
   partId: string;
   /** Follower position expressed in the anchor's local space. */
   offset: Vec3;
-  /** Follower Y rotation minus anchor Y rotation, in degrees. */
-  rotationDeg: number;
+  /**
+   * Follower rotation relative to the anchor, in degrees. A single number is
+   * treated as a Y-only angle (legacy level files).
+   */
+  rotationDeg: number | Vec3;
 }
 
 export interface AlignmentTolerance {
@@ -122,11 +125,17 @@ export interface WeldReport {
   healthBreakdown: Record<string, number>;
 }
 
-/** Live transform of a placeholder part on the table. */
+/** Live transform of a placeholder part on the table. Rotation is XYZ degrees. */
 export interface PartTransform {
   position: Vec3;
-  rotationDeg: number;
+  rotation: Vec3;
 }
+
+/** Camera framing presets offered by the viewport buttons. */
+export type CameraPreset = 'iso' | 'top' | 'front' | 'side';
+
+/** Which frame the nudge controls operate in. */
+export type TransformSpace = 'world' | 'local';
 
 export type LevelPhase =
   | 'intro'
