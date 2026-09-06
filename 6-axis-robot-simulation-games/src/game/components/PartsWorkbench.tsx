@@ -513,7 +513,7 @@ function SceneContents({
             key={part.id}
             part={part}
             transform={t}
-            selected={selectedId === part.id}
+            selected={selectedId === part.id && draggableIds.includes(part.id)}
             draggable={draggableIds.includes(part.id)}
             aligned={aligned}
             onSelect={() => onSelect(part.id)}

@@ -110,6 +110,22 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
   const [shake, setShake] = useState(false);
   const [weldReport, setWeldReport] = useState<WeldCompletionReport | null>(null);
   const [passed, setPassed] = useState(false);
+
+  // Surface *why* a weld was rejected: report the dominant defect health so the
+  // player knows which direction to move the voltage / wire-feed / travel dials.
+  const weldFaultLabel = useMemo(() => {
+    if (!weldReport) return '';
+    const faults = Object.entries(weldReport.healthBreakdown).filter(
+      ([health]) => health !== 'perfect',
+    );
+    if (faults.length === 0) return '';
+    const [worst] = faults.sort((a, b) => b[1] - a[1]);
+    const labels: Record<string, string> = {
+      too_hot: 'mostly too hot — lower voltage/WFS or speed up',
+      too_cold: 'mostly too cold — raise voltage/WFS or slow down',
+    };
+    return labels[worst[0]] ?? `mostly ${worst[0]}`;
+  }, [weldReport]);
   const banterTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -642,6 +658,7 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
                   {Math.round(weldReport.goodPercentage * 100)}% good /{' '}
                   {weldReport.beadCount} beads (need{' '}
                   {Math.round(level.metrics.minGoodWeldPercentage * 100)}%)
+                  {weldFaultLabel && ` · ${weldFaultLabel}`}
                 </span>
               )}
               <ActionButton onClick={restartLevel} icon={<RotateCcw size={14} />}>
