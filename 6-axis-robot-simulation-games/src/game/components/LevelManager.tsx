@@ -6,6 +6,7 @@ import {
   Bug,
   Flame,
   Hammer,
+  Move3D,
   RotateCcw,
   Wrench,
 } from 'lucide-react';
@@ -108,6 +109,14 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
   const [moveStepCm, setMoveStepCm] = useState(10);
   const [rotateStepDeg, setRotateStepDeg] = useState(10);
   const [debugMode, setDebugMode] = useState(false);
+  // Reference-marker presentation, tunable from the debug panel and hideable by
+  // the player once they no longer need the axis hints.
+  const [showGizmo, setShowGizmo] = useState(true);
+  const [gizmoScale, setGizmoScale] = useState(0.5);
+  // Weld-node authoring aids: edge snapping can be turned off entirely, and the
+  // radius controls how close a click must be to an edge before it is pulled in.
+  const [edgeSnap, setEdgeSnap] = useState(true);
+  const [edgeSnapCm, setEdgeSnapCm] = useState(8);
   const [weldAuthoring, setWeldAuthoring] = useState(false);
   const [targets, setTargets] = useState<RelativeTargetConfig[]>(level.targets);
   const [weldPathLocal, setWeldPathLocal] = useState<Vec3[]>(level.weldPathLocal);
@@ -222,13 +231,25 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
   // ------------------------------------------------------------------- world
   const tackPoints: WorkbenchTackPoint[] = useMemo(() => {
     if (!anchorTransform) return [];
-    return level.tackPoints.map((tp) => ({
+    // Tacks live at the ends of the seam. Deriving them from the authored weld
+    // path keeps tacking, grinding and welding on the joint the designer
+    // actually placed in the debug tool, instead of stale JSON coordinates.
+    const radius = level.tackPoints[0]?.radius ?? 0.06;
+    const locals: { id: string; local: Vec3 }[] =
+      weldPathLocal.length >= 2
+        ? [
+            { id: 'tack_start', local: weldPathLocal[0] },
+            { id: 'tack_end', local: weldPathLocal[weldPathLocal.length - 1] },
+          ]
+        : level.tackPoints.map((tp) => ({ id: tp.id, local: tp.local }));
+
+    return locals.map((tp) => ({
       id: tp.id,
       world: toWorld(anchorTransform, tp.local),
-      radius: tp.radius ?? 0.06,
+      radius,
       done: tackedIds.includes(tp.id),
     }));
-  }, [level.tackPoints, anchorTransform, tackedIds]);
+  }, [level.tackPoints, weldPathLocal, anchorTransform, tackedIds]);
 
   const weldPathWorld: Vec3[] = useMemo(() => {
     if (!anchorTransform) return [];
@@ -278,8 +299,10 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
 
   const forgeWeldNodes = useMemo(
     () =>
+      // Keep the authored seam height so the sim welds the same joint the
+      // player just ground, rather than a flat guess.
       weldPathWorld.map(
-        (p) => new THREE.Vector3(p[0], FORGE_WORKPIECE_TOP_Y, p[2])
+        (p) => new THREE.Vector3(p[0], p[1] || FORGE_WORKPIECE_TOP_Y, p[2])
       ),
     [weldPathWorld]
   );
@@ -296,7 +319,12 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
       if (!id) return;
       setTransforms((prev) => ({
         ...prev,
-        [id]: translate(prev[id], axis, cm / 100, space, grid),
+        // Snap to the step the player chose, not the level grid: a 1cm nudge
+        // against a 5cm grid used to round straight back to where it started.
+        [id]: translate(prev[id], axis, cm / 100, space, {
+          ...grid,
+          unitCm: Math.abs(cm) || grid.unitCm,
+        }),
       }));
     },
     [selectedId, space, grid]
@@ -309,7 +337,10 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
       if (!id) return;
       setTransforms((prev) => ({
         ...prev,
-        [id]: rotate(prev[id], axis, deg, space, grid),
+        [id]: rotate(prev[id], axis, deg, space, {
+          ...grid,
+          rotationDeg: Math.abs(deg) || grid.rotationDeg,
+        }),
       }));
     },
     [selectedId, space, grid]
@@ -428,14 +459,20 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
     phase === 'intro' ? level.dialogue.intro[introIndex] ?? null : banter?.line ?? null;
 
   const selectedTransform = selectedId ? transforms[selectedId] : null;
+  // Per-axis values, kept split so the control pad can colour each one to match
+  // its axis (X red, Y green, Z blue) instead of showing one grey blob.
   const readout = selectedTransform
     ? {
-        position: selectedTransform.position
-          .map((v) => `${Math.round(v * 100)}`)
-          .join(', '),
-        rotation: selectedTransform.rotation
-          .map((v) => `${Math.round(v)}°`)
-          .join(', '),
+        position: selectedTransform.position.map((v) => `${Math.round(v * 100)}`) as [
+          string,
+          string,
+          string,
+        ],
+        rotation: selectedTransform.rotation.map((v) => `${Math.round(v)}°`) as [
+          string,
+          string,
+          string,
+        ],
       }
     : undefined;
 
@@ -483,6 +520,23 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
             </button>
           ))}
         </div>
+
+        {/* Player-facing toggle for the axis reference marker. */}
+        {showControlPad && (
+          <button
+            type="button"
+            onClick={() => setShowGizmo((v) => !v)}
+            aria-pressed={showGizmo}
+            title={showGizmo ? 'Hide axis marker' : 'Show axis marker'}
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
+              showGizmo
+                ? 'bg-sky-500 text-slate-950'
+                : 'bg-slate-900 text-slate-400 hover:text-white'
+            }`}
+          >
+            <Move3D size={15} />
+          </button>
+        )}
 
         <HardHatHUD hp={hp} maxHp={level.maxHp} />
 
@@ -537,6 +591,10 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
             onAuthorWeldNode={handleAuthorWeldNode}
             grid={grid}
             space={space}
+            showGizmo={showGizmo}
+            gizmoScale={gizmoScale}
+            edgeSnap={edgeSnap}
+            edgeSnapCm={edgeSnapCm}
           />
         )}
 
@@ -577,6 +635,14 @@ export function LevelManager({ levelId = 'level1', onBack }: LevelManagerProps) 
               tolerance={level.tolerance}
               weldPathLocal={weldPathLocal}
               weldAuthoring={weldAuthoring}
+              gizmoScale={gizmoScale}
+              onGizmoScaleChange={setGizmoScale}
+              showGizmo={showGizmo}
+              onToggleGizmo={() => setShowGizmo((v) => !v)}
+              edgeSnap={edgeSnap}
+              onToggleEdgeSnap={() => setEdgeSnap((v) => !v)}
+              edgeSnapCm={edgeSnapCm}
+              onEdgeSnapCmChange={setEdgeSnapCm}
               onToggleWeldAuthoring={() => setWeldAuthoring((w) => !w)}
               onUndoWeldNode={() => setWeldPathLocal((p) => p.slice(0, -1))}
               onClearWeldPath={() => setWeldPathLocal([])}

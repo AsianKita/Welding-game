@@ -357,8 +357,10 @@ export function snapToNearestEdge(
   world: Vec3,
   part: { size: Vec3 },
   transform: PartTransform,
-  grid: GridConfig = DEFAULT_GRID
+  grid: GridConfig = DEFAULT_GRID,
+  options: { enabled?: boolean; radiusCm?: number } = {}
 ): Vec3 {
+  const { enabled = true, radiusCm } = options;
   const quat = quatFromDegrees(transform.rotation);
   // Part meshes are drawn lifted by half their height, so the box centre sits
   // above the stored transform position.
@@ -386,8 +388,24 @@ export function snapToNearestEdge(
         -limit,
         Math.min(limit, snapScalar(coords[i], grid.unitCm))
       );
+      continue;
+    }
+    const face = coords[i] >= 0 ? half[i] : -half[i];
+    // Only pull the click onto an edge when it is actually near one. Without
+    // this a click in the middle of a face jumped to a distant edge, which is
+    // what made node placement feel disconnected from the cursor.
+    const withinRadius =
+      radiusCm === undefined || Math.abs(face - coords[i]) <= radiusCm / 100;
+    if (enabled && withinRadius) {
+      snapped[i] = face;
     } else {
-      snapped[i] = coords[i] >= 0 ? half[i] : -half[i];
+      // Clamp to the box: rounding an axis outwards could otherwise lift the
+      // node off the surface the designer clicked.
+      const limit = half[i];
+      snapped[i] = Math.max(
+        -limit,
+        Math.min(limit, snapScalar(coords[i], grid.unitCm))
+      );
     }
   }
 

@@ -22,6 +22,14 @@ export function DebugPanel({
   tolerance,
   weldPathLocal,
   weldAuthoring,
+  gizmoScale,
+  onGizmoScaleChange,
+  showGizmo,
+  onToggleGizmo,
+  edgeSnap,
+  onToggleEdgeSnap,
+  edgeSnapCm,
+  onEdgeSnapCmChange,
   onToggleWeldAuthoring,
   onUndoWeldNode,
   onClearWeldPath,
@@ -36,6 +44,14 @@ export function DebugPanel({
   tolerance: { position: number; rotationDeg: number };
   weldPathLocal: Vec3[];
   weldAuthoring: boolean;
+  gizmoScale: number;
+  onGizmoScaleChange: (v: number) => void;
+  showGizmo: boolean;
+  onToggleGizmo: () => void;
+  edgeSnap: boolean;
+  onToggleEdgeSnap: () => void;
+  edgeSnapCm: number;
+  onEdgeSnapCmChange: (v: number) => void;
   onToggleWeldAuthoring: () => void;
   onUndoWeldNode: () => void;
   onClearWeldPath: () => void;
@@ -113,6 +129,27 @@ export function DebugPanel({
           placed).
         </p>
       )}
+
+      {/* Weld-node placement aids */}
+      <label className="mt-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-slate-300">
+        Snap nodes to edges
+        <input
+          type="checkbox"
+          checked={edgeSnap}
+          onChange={onToggleEdgeSnap}
+          className="h-4 w-4 accent-fuchsia-500"
+        />
+      </label>
+      {edgeSnap && (
+        <Slider
+          label="Edge grab"
+          value={edgeSnapCm}
+          min={1}
+          max={30}
+          unit="cm"
+          onChange={onEdgeSnapCmChange}
+        />
+      )}
       <div className="mt-2 grid grid-cols-2 gap-2">
         <SmallButton onClick={onUndoWeldNode} icon={<Undo2 size={13} />}>
           Undo Node
@@ -121,6 +158,29 @@ export function DebugPanel({
           Clear Path
         </SmallButton>
       </div>
+
+      <div className="my-3 h-px bg-slate-800" />
+
+      {/* Reference-marker presentation */}
+      <label className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-slate-300">
+        Show axis marker
+        <input
+          type="checkbox"
+          checked={showGizmo}
+          onChange={onToggleGizmo}
+          className="h-4 w-4 accent-fuchsia-500"
+        />
+      </label>
+      {showGizmo && (
+        <Slider
+          label="Marker size"
+          value={Math.round(gizmoScale * 100)}
+          min={10}
+          max={150}
+          unit="%"
+          onChange={(v) => onGizmoScaleChange(v / 100)}
+        />
+      )}
 
       <div className="my-3 h-px bg-slate-800" />
 
@@ -177,6 +237,43 @@ export function DebugPanel({
       {status && (
         <div className="mt-2 text-[11px] font-semibold text-amber-300">{status}</div>
       )}
+    </div>
+  );
+}
+
+/** Whole-number slider used for the debug tuning controls. */
+function Slider({
+  label,
+  value,
+  min,
+  max,
+  unit,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  unit: string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="mt-1 flex items-center gap-2">
+      <span className="w-20 shrink-0 text-[10px] text-slate-400">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        aria-label={label}
+        onChange={(e) => onChange(parseInt(e.target.value, 10))}
+        className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-slate-700 accent-fuchsia-500"
+      />
+      <span className="w-10 shrink-0 text-right font-mono text-[10px] font-bold text-fuchsia-300">
+        {value}
+        {unit}
+      </span>
     </div>
   );
 }

@@ -23,8 +23,11 @@ export interface AssemblyControlsProps {
   onMoveStepChange: (cm: number) => void;
   rotateStepDeg: number;
   onRotateStepChange: (deg: number) => void;
-  /** Live readout of the selected part. */
-  readout?: { position: string; rotation: string };
+  /** Live per-axis readout of the selected part. */
+  readout?: {
+    position: [string, string, string];
+    rotation: [string, string, string];
+  };
   disabled?: boolean;
 }
 
@@ -81,8 +84,10 @@ export function AssemblyControls({
         ))}
 
         {readout && (
-          <span className="font-mono text-[9px] text-slate-500">
-            {readout.position} · {readout.rotation}
+          <span className="flex items-center gap-1 font-mono text-[9px]">
+            <AxisReadout values={readout.position} />
+            <span className="text-slate-600">·</span>
+            <AxisReadout values={readout.rotation} />
           </span>
         )}
 
@@ -126,6 +131,19 @@ export function AssemblyControls({
         />
       </div>
     </div>
+  );
+}
+
+/** Colours each component of a triple with its axis colour. */
+function AxisReadout({ values }: { values: [string, string, string] }) {
+  return (
+    <span className="flex gap-1">
+      {values.map((v, i) => (
+        <span key={i} className={AXES[i].text}>
+          {v}
+        </span>
+      ))}
+    </span>
   );
 }
 

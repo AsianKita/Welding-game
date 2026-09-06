@@ -52,6 +52,12 @@ export interface PartsWorkbenchProps {
   grid?: GridConfig;
   /** Drives the gizmo orientation so it matches the control pad's space. */
   space?: TransformSpace;
+  /** Reference-marker presentation. */
+  showGizmo?: boolean;
+  gizmoScale?: number;
+  /** Weld-node authoring aids. */
+  edgeSnap?: boolean;
+  edgeSnapCm?: number;
 }
 
 function rotationRadians(t: PartTransform): [number, number, number] {
@@ -60,6 +66,42 @@ function rotationRadians(t: PartTransform): [number, number, number] {
     (t.rotation[1] * Math.PI) / 180,
     (t.rotation[2] * Math.PI) / 180,
   ];
+}
+
+/** How close to the seam the grinder must be before it bites. */
+const GRIND_REACH = 0.22;
+
+/**
+ * Returns the closest point on the weld polyline to `point`, so the grinder can
+ * ride the seam instead of floating at the raw pointer hit on the table plane.
+ */
+function projectOntoPath(point: THREE.Vector3, path: Vec3[]): THREE.Vector3 | null {
+  if (path.length === 0) return null;
+  if (path.length === 1) return new THREE.Vector3(...path[0]);
+
+  let best: THREE.Vector3 | null = null;
+  let bestDist = Infinity;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const ap = new THREE.Vector3();
+
+  for (let i = 0; i < path.length - 1; i += 1) {
+    a.set(...path[i]);
+    b.set(...path[i + 1]);
+    ab.subVectors(b, a);
+    const lenSq = ab.lengthSq();
+    if (lenSq === 0) continue;
+    ap.subVectors(point, a);
+    const t = THREE.MathUtils.clamp(ap.dot(ab) / lenSq, 0, 1);
+    const candidate = a.clone().addScaledVector(ab, t);
+    const d = candidate.distanceTo(point);
+    if (d < bestDist) {
+      bestDist = d;
+      best = candidate;
+    }
+  }
+  return best;
 }
 
 function Table() {
@@ -111,6 +153,7 @@ function PartMesh({
   onSelect,
   onDragStart,
   onSurfaceClick,
+  onSurfaceHover,
 }: {
   part: PartConfig;
   transform: PartTransform;
@@ -120,6 +163,7 @@ function PartMesh({
   onSelect: () => void;
   onDragStart: () => void;
   onSurfaceClick?: (world: Vec3) => void;
+  onSurfaceHover?: (world: Vec3 | null) => void;
 }) {
   const color = aligned ? '#22c55e' : part.color || '#64748b';
   return (
@@ -134,6 +178,15 @@ function PartMesh({
       <mesh
         castShadow
         receiveShadow
+        onPointerMove={
+          onSurfaceHover
+            ? (e: ThreeEvent<PointerEvent>) => {
+                e.stopPropagation();
+                onSurfaceHover([e.point.x, e.point.y, e.point.z]);
+              }
+            : undefined
+        }
+        onPointerOut={onSurfaceHover ? () => onSurfaceHover(null) : undefined}
         onPointerDown={(e: ThreeEvent<PointerEvent>) => {
           if (onSurfaceClick) {
             e.stopPropagation();
@@ -175,10 +228,12 @@ function TransformGizmo({
   part,
   transform,
   space,
+  scale,
 }: {
   part: PartConfig;
   transform: PartTransform;
   space: TransformSpace;
+  scale: number;
 }) {
   const axes: { dir: Vec3; color: string; ring: [number, number, number] }[] = [
     { dir: [1, 0, 0], color: '#ef4444', ring: [0, Math.PI / 2, 0] },
@@ -186,7 +241,10 @@ function TransformGizmo({
     { dir: [0, 0, 1], color: '#3b82f6', ring: [0, 0, 0] },
   ];
   // Scale the marker to the part so it stays readable on any plate size.
-  const reach = Math.max(...part.size) * 0.75 + 0.12;
+  const reach = (Math.max(...part.size) * 0.75 + 0.12) * scale;
+  // Shafts and heads shrink with the marker so it stays proportional.
+  const thickness = 0.006 * Math.max(0.35, scale);
+  const head = 0.026 * Math.max(0.35, scale);
 
   return (
     <group
@@ -202,7 +260,7 @@ function TransformGizmo({
       {/* Rotation rings, one per axis. */}
       {axes.map(({ color, ring }, i) => (
         <mesh key={`ring-${i}`} rotation={ring} raycast={() => null}>
-          <torusGeometry args={[reach * 0.62, 0.006, 8, 48]} />
+          <torusGeometry args={[reach * 0.62, thickness, 8, 48]} />
           <meshBasicMaterial color={color} transparent opacity={0.5} />
         </mesh>
       ))}
@@ -223,11 +281,11 @@ function TransformGizmo({
               raycast={() => null}
             >
               <mesh position={[0, reach * 0.5, 0]} raycast={() => null}>
-                <cylinderGeometry args={[0.006, 0.006, reach, 8]} />
+                <cylinderGeometry args={[thickness, thickness, reach, 8]} />
                 <meshBasicMaterial color={color} transparent opacity={0.9} />
               </mesh>
               <mesh position={[0, reach, 0]} raycast={() => null}>
-                <coneGeometry args={[0.026, 0.07, 12]} />
+                <coneGeometry args={[head, head * 2.7, 12]} />
                 <meshBasicMaterial color={color} />
               </mesh>
             </group>
@@ -504,11 +562,17 @@ function SceneContents({
   onAuthorWeldNode,
   grid = DEFAULT_GRID,
   space = 'world',
+  showGizmo = true,
+  gizmoScale = 1,
+  edgeSnap = true,
+  edgeSnapCm,
   onInteractingChange,
 }: PartsWorkbenchProps & { onInteractingChange: (v: boolean) => void }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [grinderPos, setGrinderPos] = useState(() => new THREE.Vector3(0, 0, 0));
   const [grindingNow, setGrindingNow] = useState(false);
+  // Where a weld node would land if the designer clicked right now.
+  const [weldPreview, setWeldPreview] = useState<Vec3 | null>(null);
   const grindingDownRef = useRef(false);
   const lastGrindRef = useRef(0);
 
@@ -547,19 +611,23 @@ function SceneContents({
     }
 
     if (!grinding) return;
-    setGrinderPos(new THREE.Vector3(e.point.x, e.point.y, e.point.z));
+
+    // Aim at the seam, not the floor. The pointer ray hits the table plane, so
+    // the raw hit sits below the joint; projecting it onto the weld polyline
+    // puts the disc on the metal where the player is actually pointing.
+    const cursor = new THREE.Vector3(e.point.x, e.point.y, e.point.z);
+    const projected = projectOntoPath(cursor, weldPath);
+    const distance = projected ? projected.distanceTo(cursor) : Infinity;
+    const onSeam = distance < GRIND_REACH;
+    setGrinderPos(onSeam && projected ? projected : cursor);
+
     if (!grindingDownRef.current || !onGrind || weldPath.length === 0) return;
 
     const now = performance.now();
     const seconds = Math.min(0.2, (now - lastGrindRef.current) / 1000);
     lastGrindRef.current = now;
-    const near = weldPath.some((p) => {
-      const dx = p[0] - e.point.x;
-      const dz = p[2] - e.point.z;
-      return Math.sqrt(dx * dx + dz * dz) < 0.28;
-    });
-    setGrindingNow(near);
-    if (near) onGrind(seconds);
+    setGrindingNow(onSeam);
+    if (onSeam) onGrind(seconds);
   };
 
   return (
@@ -603,12 +671,30 @@ function SceneContents({
             aligned={aligned}
             onSelect={() => onSelect(part.id)}
             onDragStart={() => setDraggingId(part.id)}
+            onSurfaceHover={
+              weldAuthoring
+                ? (world) =>
+                    setWeldPreview(
+                      world
+                        ? snapToNearestEdge(world, part, t, grid, {
+                            enabled: edgeSnap,
+                            radiusCm: edgeSnapCm,
+                          })
+                        : null
+                    )
+                : undefined
+            }
             onSurfaceClick={
               weldAuthoring && onAuthorWeldNode
                 ? (world) =>
                     // Weld joints live on edges, and nobody can click an edge
                     // pixel-perfectly, so pull the click onto the nearest one.
-                    onAuthorWeldNode(snapToNearestEdge(world, part, t, grid))
+                    onAuthorWeldNode(
+                      snapToNearestEdge(world, part, t, grid, {
+                        enabled: edgeSnap,
+                        radiusCm: edgeSnapCm,
+                      })
+                    )
                 : undefined
             }
           />
@@ -636,17 +722,32 @@ function SceneContents({
           </mesh>
         ))}
 
+      {/* Ghost of the node the next click would place. */}
+      {weldAuthoring && weldPreview && (
+        <mesh position={weldPreview} raycast={() => null}>
+          <sphereGeometry args={[0.022, 12, 12]} />
+          <meshBasicMaterial color="#f9a8d4" transparent opacity={0.85} />
+        </mesh>
+      )}
+
       {tackPoints.map((tp) => (
         <TackHitbox key={tp.id} point={tp} onTack={onTack} />
       ))}
 
       {/* Reference marker for the selected part, only while it is editable. */}
       {(() => {
-        if (!selectedId || !draggableIds.includes(selectedId)) return null;
+        if (!showGizmo || !selectedId || !draggableIds.includes(selectedId)) return null;
         const part = parts.find((p) => p.id === selectedId);
         const t = transforms[selectedId];
         if (!part || !t) return null;
-        return <TransformGizmo part={part} transform={t} space={space} />;
+        return (
+          <TransformGizmo
+            part={part}
+            transform={t}
+            space={space}
+            scale={gizmoScale}
+          />
+        );
       })()}
 
       {grinding && <AngleGrinder position={grinderPos} active={grindingNow} />}
